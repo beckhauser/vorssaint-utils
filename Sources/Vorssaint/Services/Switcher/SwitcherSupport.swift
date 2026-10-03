@@ -1466,6 +1466,26 @@ enum SwitcherSupport {
         return min(current + safeColumns, itemCount - 1)
     }
 
+    /// ↑/↓ on a wrapped icon row steps a row of icons, not of windows: an app
+    /// row lands on the target app's first window. Nil keeps the selection.
+    static func iconRowSelectionIndex(after selectedIndex: Int,
+                                      items: [SwitcherItem],
+                                      windowRow: Bool,
+                                      columns: Int,
+                                      movingDown: Bool) -> Int? {
+        guard items.indices.contains(selectedIndex) else { return nil }
+        let groups = windowRow ? [] : appGroups(items: items)
+        let selectedPID = items[selectedIndex].pid
+        guard let iconIndex = windowRow ? selectedIndex : groups.firstIndex(where: { $0.pid == selectedPID })
+        else { return nil }
+        let target = gridSelectionIndex(after: iconIndex,
+                                        itemCount: windowRow ? items.count : groups.count,
+                                        columns: columns,
+                                        movingDown: movingDown)
+        guard target != iconIndex else { return nil }
+        return windowRow ? target : groups[target].representativeIndex
+    }
+
     /// With wrapping off (key held on autorepeat, like the system switcher)
     /// the selection stops at either end instead of cycling around.
     static func nextAppSelectionIndex(items: [SwitcherItem],

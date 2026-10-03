@@ -1556,12 +1556,12 @@ final class AppSwitcher: ObservableObject {
     /// A wrapped icon row has rows to move between, so ↑/↓ step a row there;
     /// the window shortcut still walks the selected app's windows.
     private func moveIconRowSelection(movingDown: Bool) {
-        guard let iconIndex = iconRowIndex(forSelectionIndex: selectedIndex) else { return }
-        let target = SwitcherSupport.gridSelectionIndex(after: iconIndex,
-                                                        itemCount: iconRowItemCount,
-                                                        columns: iconRowLayout.columns,
-                                                        movingDown: movingDown)
-        guard target != iconIndex, let next = selectionIndex(forIconRowIndex: target) else { return }
+        guard let next = SwitcherSupport.iconRowSelectionIndex(after: selectedIndex,
+                                                               items: windows,
+                                                               windowRow: usesWindowRow,
+                                                               columns: iconRowLayout.columns,
+                                                               movingDown: movingDown)
+        else { return }
         userNavigated = true
         selectedIndex = next
     }

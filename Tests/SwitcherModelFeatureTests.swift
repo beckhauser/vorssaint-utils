@@ -3499,6 +3499,65 @@ enum SwitcherModelFeatureTests {
             previewContentWidth: 200, previewSurfaceWidth: 224, columns: 8)
         suite.expect(wrappedPlacement == secondColumnPlacement,
                "App Switcher preview sits over the selected icon's column on a wrapped row")
+        // Five apps capped at two columns: Alpha Beta / Gamma Delta / Epsilon.
+        let wrappedApps = [
+            SwitcherItem.window(id: 1, title: "A1", appName: "Alpha", pid: 101, isOnScreen: true, frame: .zero),
+            SwitcherItem.window(id: 2, title: "A2", appName: "Alpha", pid: 101, isOnScreen: true, frame: .zero),
+            SwitcherItem.window(id: 3, title: "B1", appName: "Beta", pid: 202, isOnScreen: true, frame: .zero),
+            SwitcherItem.window(id: 4, title: "G1", appName: "Gamma", pid: 303, isOnScreen: true, frame: .zero),
+            SwitcherItem.window(id: 5, title: "G2", appName: "Gamma", pid: 303, isOnScreen: true, frame: .zero),
+            SwitcherItem.window(id: 6, title: "D1", appName: "Delta", pid: 404, isOnScreen: true, frame: .zero),
+            SwitcherItem.window(id: 7, title: "E1", appName: "Epsilon", pid: 505, isOnScreen: true, frame: .zero),
+        ]
+        func appRowMove(from index: Int, down: Bool) -> Int? {
+            SwitcherSupport.iconRowSelectionIndex(after: index, items: wrappedApps, windowRow: false,
+                                                  columns: 2, movingDown: down)
+        }
+        suite.expect(appRowMove(from: 1, down: true) == 3
+               && appRowMove(from: 2, down: true) == 5
+               && appRowMove(from: 4, down: false) == 0,
+               "App Switcher ↑/↓ on wrapped app rows moves a row of apps from any of the app's windows")
+        suite.expect(appRowMove(from: 5, down: true) == 6,
+               "App Switcher ↓ onto a shorter last app row lands on its last app")
+        suite.expect(appRowMove(from: 0, down: false) == nil
+               && appRowMove(from: 1, down: false) == nil
+               && appRowMove(from: 6, down: true) == nil
+               && appRowMove(from: 9, down: true) == nil,
+               "App Switcher ↑/↓ keeps the selection at the top and bottom of wrapped app rows")
+        // Seven windows capped at three columns: 0 1 2 / 3 4 5 / 6.
+        func windowRowMove(from index: Int, down: Bool) -> Int? {
+            SwitcherSupport.iconRowSelectionIndex(after: index, items: wrappedApps, windowRow: true,
+                                                  columns: 3, movingDown: down)
+        }
+        suite.expect(windowRowMove(from: 1, down: true) == 4
+               && windowRowMove(from: 4, down: false) == 1
+               && windowRowMove(from: 5, down: true) == 6,
+               "App Switcher ↑/↓ on a wrapped window row steps whole rows, onto a shorter last row too")
+        suite.expect(windowRowMove(from: 2, down: false) == nil
+               && windowRowMove(from: 6, down: true) == nil,
+               "App Switcher ↑/↓ keeps the selection at the edges of a wrapped window row")
+        // Displays of different widths: the cap holds where it fits and yields
+        // where it does not, so the panel never outgrows the narrower screen.
+        let laptop = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let wideDisplay = CGRect(x: 0, y: 0, width: 3440, height: 1440)
+        let laptopIcons = SwitcherIconRowLayout.compute(appCount: 30, selectedWindowCount: 1,
+                                                        screenVisibleFrame: laptop, maxColumns: 8)
+        let wideIcons = SwitcherIconRowLayout.compute(appCount: 30, selectedWindowCount: 1,
+                                                      screenVisibleFrame: wideDisplay, maxColumns: 8)
+        suite.expect(laptopIcons.columns == 8 && wideIcons.columns == 8
+               && laptopIcons.panelSize.width <= laptop.width
+               && laptopIcons.panelSize.height <= laptop.height,
+               "App Switcher icon rows keep a cap of eight on a 1440 point display and stay inside it")
+        let windowIcons = SwitcherIconRowLayout.compute(appCount: 30, selectedWindowCount: 1,
+                                                        screenVisibleFrame: CGRect(x: 0, y: 0, width: 600, height: 900),
+                                                        tileWidth: SwitcherIconRowLayout.windowTileWidth,
+                                                        maxColumns: 8)
+        suite.expect(windowIcons.isWrapped && windowIcons.columns < 8
+               && windowIcons.panelSize.width <= 600,
+               "App Switcher icon rows drop below the cap when the display cannot fit it")
+        suite.expect(SwitcherSupport.wrappingColumnCount(itemCount: 20, fitByWidth: 4, userMax: 8) == 4
+               && SwitcherSupport.wrappingColumnCount(itemCount: 20, fitByWidth: 11, userMax: 8) == 8,
+               "App Switcher grid cap yields to the four cards a 1440 point display fits and holds on a wider one")
         suite.expect(SwitcherSupport.gridSelectionIndex(after: 1,
                                                    itemCount: 8,
                                                    columns: 5,
