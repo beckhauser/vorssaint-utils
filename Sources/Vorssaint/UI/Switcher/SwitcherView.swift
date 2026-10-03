@@ -469,7 +469,7 @@ struct SwitcherView: View {
             )
             .shadow(color: Color.black.opacity(0.22), radius: 10, x: 0, y: 5)
             .frame(width: switcher.iconRowLayout.appRowSurfaceWidth,
-                   height: SwitcherIconRowLayout.rowHeight)
+                   height: switcher.iconRowLayout.iconAreaHeight)
     }
 
     @ViewBuilder
@@ -488,7 +488,7 @@ struct SwitcherView: View {
             itemCount: groups.count,
             tileWidth: SwitcherIconRowLayout.appTileWidth
         ) {
-            ForEach(groups) { group in
+            ForEach(Array(groups.enumerated()), id: \.element.id) { position, group in
                 let index = group.representativeIndex
                 let window = switcher.windows[index]
                 SwitcherIconTile(window: window,
@@ -501,7 +501,10 @@ struct SwitcherView: View {
                                      switcher.commitSession()
                                  })
                     .overlay(alignment: .leading) {
-                        if dividerPIDs.contains(group.pid) {
+                        // A wrapped row's first icon has no gap to its left
+                        // to draw in; the divider would land outside the grid.
+                        if dividerPIDs.contains(group.pid),
+                           position % switcher.iconRowLayout.columns != 0 || !switcher.iconRowLayout.isWrapped {
                             Rectangle()
                                 .fill(Color(nsColor: .separatorColor))
                                 .frame(width: 1, height: SwitcherIconRowLayout.iconSize)
@@ -511,6 +514,7 @@ struct SwitcherView: View {
                                 .accessibilityHidden(true)
                         }
                     }
+                    .id(group.pid)
                     .onHover { hovering in
                         if hovering {
                             switcher.hoverSelectIconRow(index: index)
@@ -539,6 +543,7 @@ struct SwitcherView: View {
                         switcher.commitSession()
                     }
                 )
+                .id(window.id)
                 .onHover { hovering in
                     if hovering {
                         switcher.hoverSelectIconRow(index: index)
@@ -550,9 +555,57 @@ struct SwitcherView: View {
         }
     }
 
+    @ViewBuilder
     private func overflowingIconRow<Content: View>(itemCount: Int,
                                                    tileWidth: CGFloat,
                                                    @ViewBuilder content: () -> Content) -> some View {
+        if switcher.iconRowLayout.isWrapped {
+            wrappedIconRows(tileWidth: tileWidth, content: content)
+        } else {
+            singleIconRow(itemCount: itemCount, tileWidth: tileWidth, content: content)
+        }
+    }
+
+    /// The icons wrapped at the user's column cap. Rows past what the screen
+    /// holds scroll, following the selection like the card grid does.
+    private func wrappedIconRows<Content: View>(tileWidth: CGFloat,
+                                                @ViewBuilder content: () -> Content) -> some View {
+        let layout = switcher.iconRowLayout
+        let tiles = content()
+        return ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.fixed(tileWidth),
+                                                       spacing: SwitcherIconRowLayout.spacing),
+                                   count: layout.columns),
+                    spacing: 0
+                ) {
+                    tiles
+                        .frame(height: SwitcherIconRowLayout.rowHeight)
+                }
+            }
+            .scrollDisabled(layout.rows <= layout.visibleRows)
+            .onChange(of: switcher.selectedIndex) { _, _ in
+                guard let id = selectedIconScrollID else { return }
+                withAnimation(instantSelection ? nil : .easeOut(duration: 0.15)) {
+                    proxy.scrollTo(id, anchor: nil)
+                }
+            }
+        }
+        .frame(width: layout.appRowContentWidth, height: layout.iconAreaHeight)
+        .contentShape(Rectangle())
+    }
+
+    /// The scroll identity of the selected icon: its window in a window row,
+    /// its app in an app row.
+    private var selectedIconScrollID: AnyHashable? {
+        guard let selectedWindow else { return nil }
+        return usesWindowRow ? AnyHashable(selectedWindow.id) : AnyHashable(selectedWindow.pid)
+    }
+
+    private func singleIconRow<Content: View>(itemCount: Int,
+                                              tileWidth: CGFloat,
+                                              @ViewBuilder content: () -> Content) -> some View {
         let overflow = itemCount > switcher.iconRowLayout.visibleIconCount
         return HStack(alignment: .center, spacing: SwitcherIconRowLayout.spacing) {
             content()
@@ -624,7 +677,8 @@ struct SwitcherView: View {
             appRowContentWidth: switcher.iconRowLayout.appRowContentWidth,
             appRowSurfaceWidth: switcher.iconRowLayout.appRowSurfaceWidth,
             previewContentWidth: switcher.iconRowLayout.previewContentWidth,
-            previewSurfaceWidth: switcher.iconRowLayout.previewSurfaceWidth
+            previewSurfaceWidth: switcher.iconRowLayout.previewSurfaceWidth,
+            columns: switcher.iconRowLayout.isWrapped ? switcher.iconRowLayout.columns : nil
         )
     }
 }

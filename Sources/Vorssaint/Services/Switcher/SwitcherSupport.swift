@@ -324,6 +324,18 @@ struct SwitcherIconRowLayout: Equatable {
     let simpleTitleSurfaceWidth: CGFloat
     let panelSize: CGSize
     let showsShortcutHints: Bool
+    /// Icons per row and how many rows there are. One row unless the user
+    /// capped the columns and there are more icons than the cap; a wrapped
+    /// row never pages sideways, it scrolls down past `visibleRows`.
+    let columns: Int
+    let rows: Int
+    let visibleRows: Int
+
+    var isWrapped: Bool { rows > 1 }
+
+    /// The rows the icon surface shows at once, stacked without gaps: each
+    /// row already carries its own vertical margins.
+    var iconAreaHeight: CGFloat { CGFloat(max(1, visibleRows)) * Self.rowHeight }
 
     static var scale: CGFloat { min(PreviewSizing.switcherScale, 1.15) }
     static var iconSize: CGFloat { 68 * scale }
@@ -394,7 +406,7 @@ struct SwitcherIconRowLayout: Equatable {
     var simplePanelSize: CGSize {
         CGSize(width: contentWidth(simpleMode: true, windowRow: false) + Self.padding * 2,
                height: Self.simpleTitleHeight + Self.simpleTitleGap
-                        + Self.rowHeight + shortcutHintHeight
+                        + iconAreaHeight + shortcutHintHeight
                         + Self.padding * 2)
     }
 
@@ -402,7 +414,7 @@ struct SwitcherIconRowLayout: Equatable {
     /// separate title strip above the row.
     var simpleWindowPanelSize: CGSize {
         CGSize(width: contentWidth(simpleMode: true, windowRow: true) + Self.padding * 2,
-               height: Self.rowHeight + shortcutHintHeight + Self.padding * 2)
+               height: iconAreaHeight + shortcutHintHeight + Self.padding * 2)
     }
 
     private var shortcutHintHeight: CGFloat {
@@ -416,7 +428,10 @@ struct SwitcherIconRowLayout: Equatable {
                                              previewSurfaceWidth: 0,
                                              simpleTitleSurfaceWidth: 0,
                                              panelSize: .zero,
-                                             showsShortcutHints: true)
+                                             showsShortcutHints: true,
+                                             columns: 1,
+                                             rows: 1,
+                                             visibleRows: 1)
 
     static func compute(appCount rawAppCount: Int,
                         selectedWindowCount rawWindowCount: Int,
@@ -424,12 +439,21 @@ struct SwitcherIconRowLayout: Equatable {
                         sessionScope: SwitcherSessionScope = .allApps,
                         screenVisibleFrame: CGRect,
                         showsShortcutHints: Bool = true,
-                        tileWidth: CGFloat = appTileWidth) -> SwitcherIconRowLayout {
+                        tileWidth: CGFloat = appTileWidth,
+                        maxColumns userMax: Int? = nil) -> SwitcherIconRowLayout {
         let appCount = max(1, rawAppCount)
         let windowCount = max(1, rawWindowCount)
         let usableWidth = max(320, screenVisibleFrame.width * 0.96)
         let maxContentWidth = max(tileWidth, usableWidth - padding * 2)
-        let naturalAppRowWidth = CGFloat(appCount) * tileWidth + CGFloat(max(0, appCount - 1)) * spacing
+        let fitByWidth = max(1, Int((max(tileWidth, maxContentWidth - rowHorizontalPadding * 2) + spacing)
+                                    / (tileWidth + spacing)))
+        let cap = SwitcherSupport.cappedColumnCount(fitByWidth: fitByWidth, userMax: userMax)
+        // Only a user cap wraps: Auto keeps the single row that pages sideways.
+        let wraps = userMax != nil && appCount > cap
+        let columns = wraps ? cap : appCount
+        let rows = wraps ? (appCount + columns - 1) / columns : 1
+        let rowIcons = wraps ? columns : appCount
+        let naturalAppRowWidth = CGFloat(rowIcons) * tileWidth + CGFloat(max(0, rowIcons - 1)) * spacing
         let naturalPreviewWidth = Self.naturalPreviewWidth(cardCount: windowCount)
         let maxAppContentWidth = max(tileWidth, maxContentWidth - rowHorizontalPadding * 2)
         let maxPreviewContentWidth = max(previewCardWidth, maxContentWidth - previewPanelPadding * 2)
@@ -456,10 +480,16 @@ struct SwitcherIconRowLayout: Equatable {
         let contentWidth = min(max(appRowSurfaceWidth,
                                    previewCeiling + previewPanelPadding * 2,
                                    hintWidth), maxContentWidth)
-        let visibleIconCount = max(1, min(appCount, Int((maxAppContentWidth + spacing) / (tileWidth + spacing))))
+        let visibleIconCount = wraps ? appCount : min(appCount, fitByWidth)
         let width = contentWidth + padding * 2
         let shortcutHintHeight = showsShortcutHints ? hintGap + hintHeight : 0
-        let height = previewHeight + previewGap + rowHeight + shortcutHintHeight + padding * 2
+        // Rows beyond what the screen holds scroll. Budget for the taller of
+        // the two things above the icons, so either mode fits.
+        let aboveIcons = max(previewHeight + previewGap, simpleTitleHeight + simpleTitleGap)
+        let rowBudget = screenVisibleFrame.height * 0.85 - aboveIcons - shortcutHintHeight - padding * 2
+        let visibleRows = max(1, min(rows, Int(rowBudget / rowHeight)))
+        let iconAreaHeight = CGFloat(visibleRows) * rowHeight
+        let height = previewHeight + previewGap + iconAreaHeight + shortcutHintHeight + padding * 2
         return SwitcherIconRowLayout(visibleIconCount: visibleIconCount,
                                      appRowContentWidth: appRowWidth,
                                      appRowSurfaceWidth: appRowSurfaceWidth,
@@ -467,7 +497,10 @@ struct SwitcherIconRowLayout: Equatable {
                                      previewSurfaceWidth: previewSurfaceWidth,
                                      simpleTitleSurfaceWidth: simpleTitleSurfaceWidth,
                                      panelSize: CGSize(width: width, height: height),
-                                     showsShortcutHints: showsShortcutHints)
+                                     showsShortcutHints: showsShortcutHints,
+                                     columns: wraps ? columns : visibleIconCount,
+                                     rows: rows,
+                                     visibleRows: visibleRows)
     }
 
     static func compute(count rawCount: Int, screenVisibleFrame: CGRect) -> SwitcherIconRowLayout {
@@ -499,6 +532,35 @@ enum SwitcherSupport {
 
     static func appearanceDelay(milliseconds: Int) -> TimeInterval {
         TimeInterval(sanitizedAppearanceDelay(milliseconds: milliseconds)) / 1000
+    }
+
+    /// The most items a switcher row may hold before wrapping. Ultrawide
+    /// displays fit so many per row that the panel spans the whole screen;
+    /// a cap keeps it compact and wraps the rest onto more rows.
+    static let maxColumnsRange: ClosedRange<Int> = 2 ... 8
+
+    /// Nil means Auto: as many as the screen fits, the behavior before the cap.
+    static func sanitizedMaxColumns(_ value: Int) -> Int? {
+        guard value > 0 else { return nil }
+        return min(max(value, maxColumnsRange.lowerBound), maxColumnsRange.upperBound)
+    }
+
+    static var userMaxColumns: Int? {
+        sanitizedMaxColumns(UserDefaults.standard.integer(forKey: DefaultsKey.switcherMaxColumns))
+    }
+
+    /// The screen still wins: a cap wider than what fits never overflows it.
+    static func cappedColumnCount(fitByWidth: Int, userMax: Int?) -> Int {
+        max(1, min(fitByWidth, userMax ?? fitByWidth))
+    }
+
+    /// Columns for a row that wraps. A cap the user set is filled exactly,
+    /// left to right, so 3 means 3 + 1 rather than an evened-out 2 + 2; Auto
+    /// keeps balancing the rows the screen width requires.
+    static func wrappingColumnCount(itemCount: Int, fitByWidth: Int, userMax: Int?) -> Int {
+        let cap = cappedColumnCount(fitByWidth: fitByWidth, userMax: userMax)
+        guard userMax != nil else { return gridColumnCount(itemCount: itemCount, maxColumns: cap) }
+        return max(1, min(max(itemCount, 1), cap))
     }
 
     /// How wide a window's name is in the font a card draws it in. Measured
@@ -1295,7 +1357,8 @@ enum SwitcherSupport {
                                          appRowContentWidth: CGFloat,
                                          appRowSurfaceWidth: CGFloat,
                                          previewContentWidth _: CGFloat,
-                                         previewSurfaceWidth: CGFloat) -> SwitcherIconRowPreviewPlacement {
+                                         previewSurfaceWidth: CGFloat,
+                                         columns rawColumns: Int? = nil) -> SwitcherIconRowPreviewPlacement {
         let appCount = max(1, rawAppCount)
         let visibleIconCount = max(1, rawVisibleIconCount)
         let selectedAppIndex = min(max(0, rawSelectedAppIndex), appCount - 1)
@@ -1309,8 +1372,10 @@ enum SwitcherSupport {
         if appCount > visibleIconCount {
             selectedCenterInRow = rowLeading + appRowContentWidth / 2
         } else {
+            // A wrapped row puts the selection under its column, not its index.
+            let column = rawColumns.map { selectedAppIndex % max(1, $0) } ?? selectedAppIndex
             selectedCenterInRow = rowLeading + SwitcherIconRowLayout.appTileWidth / 2
-                + CGFloat(selectedAppIndex) * (SwitcherIconRowLayout.appTileWidth + SwitcherIconRowLayout.spacing)
+                + CGFloat(column) * (SwitcherIconRowLayout.appTileWidth + SwitcherIconRowLayout.spacing)
         }
 
         let rawLeading = selectedCenterInRow - previewSurfaceWidth / 2
