@@ -3454,6 +3454,12 @@ enum SwitcherModelFeatureTests {
         suite.expect(SwitcherSupport.wrappingColumnCount(itemCount: 10, fitByWidth: 8, userMax: nil)
                == SwitcherSupport.gridColumnCount(itemCount: 10, maxColumns: 8),
                "App Switcher keeps balanced rows on Auto")
+        // A cap above Auto's balanced count must not widen the grid: six
+        // windows on a laptop that fits five stay 3 + 3, not 5 + 1.
+        suite.expect(SwitcherSupport.wrappingColumnCount(itemCount: 6, fitByWidth: 5, userMax: 8) == 3
+               && SwitcherSupport.wrappingColumnCount(itemCount: 5, fitByWidth: 4, userMax: 8) == 3
+               && SwitcherSupport.wrappingColumnCount(itemCount: 12, fitByWidth: 10, userMax: 8) == 6,
+               "App Switcher column cap never makes the grid wider than Auto")
         let ultrawide = CGRect(x: 0, y: 0, width: 5120, height: 1415)
         let strictIcons = SwitcherIconRowLayout.compute(appCount: 4, selectedWindowCount: 1,
                                                         screenVisibleFrame: ultrawide, maxColumns: 3)
@@ -3558,6 +3564,12 @@ enum SwitcherModelFeatureTests {
                && SwitcherSupport.iconRowScrollID(items: wrappedApps, selectedIndex: 99,
                                                   windowRow: true) == nil,
                "App Switcher reveals the reverse-start tile on open, in window and app rows")
+        // A search can keep the selected index while the item under it moves
+        // to another row; the rows follow the tile's identity, which changes.
+        let searched = Array(wrappedApps.dropFirst(3))
+        suite.expect(SwitcherSupport.iconRowScrollID(items: wrappedApps, selectedIndex: 3, windowRow: false)
+               != SwitcherSupport.iconRowScrollID(items: searched, selectedIndex: 3, windowRow: false),
+               "App Switcher reveals the new tile when a search keeps the selected index")
         // Displays of different widths: the cap holds where it fits and yields
         // where it does not, so the panel never outgrows the narrower screen.
         let laptop = CGRect(x: 0, y: 0, width: 1440, height: 900)

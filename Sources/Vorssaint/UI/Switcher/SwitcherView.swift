@@ -594,20 +594,34 @@ struct SwitcherView: View {
             // The reverse shortcut opens on the last item, which is selected
             // before this view exists, so no change fires to reveal it.
             .onAppear { revealSelectedIcon(in: proxy, animated: false) }
-            .onChange(of: switcher.selectedIndex) { _, _ in
+            // Follow the selected icon rather than the index: a search can keep
+            // the index while the item under it, and so its row, changes.
+            .onChange(of: selectedIconScrollID) { _, _ in
                 revealSelectedIcon(in: proxy, animated: true)
+            }
+            .onChange(of: layout.rows) { _, _ in
+                revealSelectedIcon(in: proxy, animated: false)
             }
         }
         .frame(width: layout.appRowContentWidth, height: layout.iconAreaHeight)
         .contentShape(Rectangle())
     }
 
+    private var selectedIconScrollID: AnyHashable? {
+        SwitcherSupport.iconRowScrollID(items: switcher.windows,
+                                        selectedIndex: switcher.selectedIndex,
+                                        windowRow: usesWindowRow)
+    }
+
+    /// Same guard as `revealSelection`: before macOS 26 an animated scroll can
+    /// be dropped during fast navigation, so those versions scroll at once.
     private func revealSelectedIcon(in proxy: ScrollViewProxy, animated: Bool) {
-        guard let id = SwitcherSupport.iconRowScrollID(items: switcher.windows,
-                                                       selectedIndex: switcher.selectedIndex,
-                                                       windowRow: usesWindowRow)
-        else { return }
-        withAnimation(animated && !instantSelection ? .easeOut(duration: 0.15) : nil) {
+        guard let id = selectedIconScrollID else { return }
+        guard animated, !instantSelection, #available(macOS 26, *) else {
+            proxy.scrollTo(id, anchor: nil)
+            return
+        }
+        withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(id, anchor: nil)
         }
     }

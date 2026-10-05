@@ -335,7 +335,9 @@ struct SwitcherIconRowLayout: Equatable {
 
     /// The rows the icon surface shows at once, stacked without gaps: each
     /// row already carries its own vertical margins.
-    var iconAreaHeight: CGFloat { CGFloat(max(1, visibleRows)) * Self.rowHeight }
+    var iconAreaHeight: CGFloat { Self.iconAreaHeight(visibleRows: visibleRows) }
+
+    static func iconAreaHeight(visibleRows: Int) -> CGFloat { CGFloat(max(1, visibleRows)) * rowHeight }
 
     static var scale: CGFloat { min(PreviewSizing.switcherScale, 1.15) }
     static var iconSize: CGFloat { 68 * scale }
@@ -445,8 +447,8 @@ struct SwitcherIconRowLayout: Equatable {
         let windowCount = max(1, rawWindowCount)
         let usableWidth = max(320, screenVisibleFrame.width * 0.96)
         let maxContentWidth = max(tileWidth, usableWidth - padding * 2)
-        let fitByWidth = max(1, Int((max(tileWidth, maxContentWidth - rowHorizontalPadding * 2) + spacing)
-                                    / (tileWidth + spacing)))
+        let maxAppContentWidth = max(tileWidth, maxContentWidth - rowHorizontalPadding * 2)
+        let fitByWidth = max(1, Int((maxAppContentWidth + spacing) / (tileWidth + spacing)))
         let cap = SwitcherSupport.cappedColumnCount(fitByWidth: fitByWidth, userMax: userMax)
         // Only a user cap wraps: Auto keeps the single row that pages sideways.
         let wraps = userMax != nil && appCount > cap
@@ -455,7 +457,6 @@ struct SwitcherIconRowLayout: Equatable {
         let rowIcons = wraps ? columns : appCount
         let naturalAppRowWidth = CGFloat(rowIcons) * tileWidth + CGFloat(max(0, rowIcons - 1)) * spacing
         let naturalPreviewWidth = Self.naturalPreviewWidth(cardCount: windowCount)
-        let maxAppContentWidth = max(tileWidth, maxContentWidth - rowHorizontalPadding * 2)
         let maxPreviewContentWidth = max(previewCardWidth, maxContentWidth - previewPanelPadding * 2)
         let appRowWidth = min(naturalAppRowWidth, maxAppContentWidth)
         let appRowSurfaceWidth = min(appRowWidth + rowHorizontalPadding * 2, maxContentWidth)
@@ -480,6 +481,8 @@ struct SwitcherIconRowLayout: Equatable {
         let contentWidth = min(max(appRowSurfaceWidth,
                                    previewCeiling + previewPanelPadding * 2,
                                    hintWidth), maxContentWidth)
+        // Wrapped rows scroll down instead of paging sideways, so every icon
+        // counts as visible: that keeps the edge-hover paging switched off.
         let visibleIconCount = wraps ? appCount : min(appCount, fitByWidth)
         let width = contentWidth + padding * 2
         let shortcutHintHeight = showsShortcutHints ? hintGap + hintHeight : 0
@@ -488,8 +491,8 @@ struct SwitcherIconRowLayout: Equatable {
         let aboveIcons = max(previewHeight + previewGap, simpleTitleHeight + simpleTitleGap)
         let rowBudget = screenVisibleFrame.height * 0.85 - aboveIcons - shortcutHintHeight - padding * 2
         let visibleRows = max(1, min(rows, Int(rowBudget / rowHeight)))
-        let iconAreaHeight = CGFloat(visibleRows) * rowHeight
-        let height = previewHeight + previewGap + iconAreaHeight + shortcutHintHeight + padding * 2
+        let height = previewHeight + previewGap + Self.iconAreaHeight(visibleRows: visibleRows)
+            + shortcutHintHeight + padding * 2
         return SwitcherIconRowLayout(visibleIconCount: visibleIconCount,
                                      appRowContentWidth: appRowWidth,
                                      appRowSurfaceWidth: appRowSurfaceWidth,
@@ -554,13 +557,14 @@ enum SwitcherSupport {
         max(1, min(fitByWidth, userMax ?? fitByWidth))
     }
 
-    /// Columns for a row that wraps. A cap the user set is filled exactly,
-    /// left to right, so 3 means 3 + 1 rather than an evened-out 2 + 2; Auto
-    /// keeps balancing the rows the screen width requires.
+    /// Columns for a card grid. Auto balances the rows the screen width
+    /// requires; a cap only ever narrows that, so 3 still gives 3 + 1 for four
+    /// windows but a cap of 8 never spreads six windows wider than Auto's
+    /// 3 + 3. The panel is never wider with a cap than without one.
     static func wrappingColumnCount(itemCount: Int, fitByWidth: Int, userMax: Int?) -> Int {
-        let cap = cappedColumnCount(fitByWidth: fitByWidth, userMax: userMax)
-        guard userMax != nil else { return gridColumnCount(itemCount: itemCount, maxColumns: cap) }
-        return max(1, min(max(itemCount, 1), cap))
+        let auto = gridColumnCount(itemCount: itemCount, maxColumns: fitByWidth)
+        guard let userMax else { return auto }
+        return max(1, min(auto, userMax))
     }
 
     /// How wide a window's name is in the font a card draws it in. Measured
