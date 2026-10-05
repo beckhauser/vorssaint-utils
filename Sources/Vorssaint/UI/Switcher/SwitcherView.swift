@@ -585,22 +585,25 @@ struct SwitcherView: View {
                 }
             }
             .scrollDisabled(layout.rows <= layout.visibleRows)
+            // The reverse shortcut opens on the last item, which is selected
+            // before this view exists, so no change fires to reveal it.
+            .onAppear { revealSelectedIcon(in: proxy, animated: false) }
             .onChange(of: switcher.selectedIndex) { _, _ in
-                guard let id = selectedIconScrollID else { return }
-                withAnimation(instantSelection ? nil : .easeOut(duration: 0.15)) {
-                    proxy.scrollTo(id, anchor: nil)
-                }
+                revealSelectedIcon(in: proxy, animated: true)
             }
         }
         .frame(width: layout.appRowContentWidth, height: layout.iconAreaHeight)
         .contentShape(Rectangle())
     }
 
-    /// The scroll identity of the selected icon: its window in a window row,
-    /// its app in an app row.
-    private var selectedIconScrollID: AnyHashable? {
-        guard let selectedWindow else { return nil }
-        return usesWindowRow ? AnyHashable(selectedWindow.id) : AnyHashable(selectedWindow.pid)
+    private func revealSelectedIcon(in proxy: ScrollViewProxy, animated: Bool) {
+        guard let id = SwitcherSupport.iconRowScrollID(items: switcher.windows,
+                                                       selectedIndex: switcher.selectedIndex,
+                                                       windowRow: usesWindowRow)
+        else { return }
+        withAnimation(animated && !instantSelection ? .easeOut(duration: 0.15) : nil) {
+            proxy.scrollTo(id, anchor: nil)
+        }
     }
 
     private func singleIconRow<Content: View>(itemCount: Int,

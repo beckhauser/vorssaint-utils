@@ -1486,6 +1486,17 @@ enum SwitcherSupport {
         return windowRow ? target : groups[target].representativeIndex
     }
 
+    /// The tile a wrapped icon row scrolls to: the selected window in a window
+    /// row, the selected window's app in an app row. The tiles carry the same
+    /// identities, so this is what reveals the selection.
+    static func iconRowScrollID(items: [SwitcherItem],
+                                selectedIndex: Int,
+                                windowRow: Bool) -> AnyHashable? {
+        guard items.indices.contains(selectedIndex) else { return nil }
+        let selected = items[selectedIndex]
+        return windowRow ? AnyHashable(selected.id) : AnyHashable(selected.pid)
+    }
+
     /// With wrapping off (key held on autorepeat, like the system switcher)
     /// the selection stops at either end instead of cycling around.
     static func nextAppSelectionIndex(items: [SwitcherItem],

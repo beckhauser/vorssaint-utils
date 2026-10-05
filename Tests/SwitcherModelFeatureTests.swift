@@ -3536,6 +3536,28 @@ enum SwitcherModelFeatureTests {
         suite.expect(windowRowMove(from: 2, down: false) == nil
                && windowRowMove(from: 6, down: true) == nil,
                "App Switcher ↑/↓ keeps the selection at the edges of a wrapped window row")
+        // The reverse shortcut opens on the last item, below the rows a short
+        // screen shows. The panel reveals it when it appears, so the tile it
+        // scrolls to must be that last item, not the top of the list.
+        let reverseStart = SwitcherSupport.initialSelectionPosition(pids: wrappedApps.map(\.pid),
+                                                                    hasForegroundEntry: true,
+                                                                    frontmostPID: 101,
+                                                                    reversed: true)
+        let shortScreenRows = SwitcherIconRowLayout.compute(appCount: wrappedApps.count, selectedWindowCount: 1,
+                                                            screenVisibleFrame: CGRect(x: 0, y: 0, width: 1440, height: 520),
+                                                            tileWidth: SwitcherIconRowLayout.windowTileWidth,
+                                                            maxColumns: 2)
+        suite.expect(reverseStart == wrappedApps.count - 1
+               && shortScreenRows.visibleRows < shortScreenRows.rows
+               && reverseStart / shortScreenRows.columns >= shortScreenRows.visibleRows,
+               "App Switcher reverse start lands on a wrapped row below the visible ones")
+        suite.expect(SwitcherSupport.iconRowScrollID(items: wrappedApps, selectedIndex: reverseStart,
+                                                     windowRow: true) == AnyHashable(wrappedApps[6].id)
+               && SwitcherSupport.iconRowScrollID(items: wrappedApps, selectedIndex: reverseStart,
+                                                  windowRow: false) == AnyHashable(pid_t(505))
+               && SwitcherSupport.iconRowScrollID(items: wrappedApps, selectedIndex: 99,
+                                                  windowRow: true) == nil,
+               "App Switcher reveals the reverse-start tile on open, in window and app rows")
         // Displays of different widths: the cap holds where it fits and yields
         // where it does not, so the panel never outgrows the narrower screen.
         let laptop = CGRect(x: 0, y: 0, width: 1440, height: 900)
