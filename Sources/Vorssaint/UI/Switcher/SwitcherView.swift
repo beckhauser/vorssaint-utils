@@ -182,6 +182,12 @@ struct SwitcherView: View {
                 }
             }
             .scrollDisabled(switcher.grid.rows <= switcher.grid.visibleRows)
+            // Like the wrapped icon rows: a reverse start selects the last card
+            // before the grid exists, so reveal it on appear too.
+            .onAppear {
+                guard switcher.windows.indices.contains(switcher.selectedIndex) else { return }
+                proxy.scrollTo(switcher.windows[switcher.selectedIndex].id, anchor: nil)
+            }
             .onChange(of: switcher.selectedIndex) { _, newIndex in
                 guard switcher.windows.indices.contains(newIndex) else { return }
                 withAnimation(instantSelection ? nil : .easeOut(duration: 0.15)) {
