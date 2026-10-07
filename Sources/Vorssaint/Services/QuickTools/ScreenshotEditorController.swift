@@ -33,6 +33,13 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
     }
     /// Words recognized in the capture and selectable with the select tool.
     @Published private(set) var textWords: [ScreenshotSupport.RecognizedWord] = []
+    /// The recognized words joined into the runs text only blur areas cover,
+    /// or nil until recognition has read all of the current capture.
+    @Published private(set) var textRuns: [CGRect]?
+    /// Runs a crop carried over to the capture it made. Recognition misses a
+    /// line the crop cut through, so the cropped capture's runs keep these
+    /// once it is read, and after an undo or redo back to it.
+    private var carriedRuns: [ObjectIdentifier: [CGRect]] = [:]
     @Published private(set) var selectedWordIndexes: [Int] = []
     private var textSelectionAnchor: CGPoint?
     /// A QR code found in the capture, offered as a copy or open action.
@@ -58,7 +65,19 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
     @Published var blurLevel: Int {
         didSet {
             UserDefaults.standard.set(blurLevel, forKey: DefaultsKey.screenshotLastBlurLevel)
-            applyBlurLevelToSelection()
+            applyBlurToSelection()
+        }
+    }
+    @Published var blurStyle: ScreenshotSupport.BlurStyleID {
+        didSet {
+            UserDefaults.standard.set(blurStyle.rawValue, forKey: DefaultsKey.screenshotLastBlurStyle)
+            applyBlurToSelection()
+        }
+    }
+    @Published var blurTextOnly: Bool {
+        didSet {
+            UserDefaults.standard.set(blurTextOnly, forKey: DefaultsKey.screenshotLastBlurTextOnly)
+            applyBlurToSelection()
         }
     }
     @Published var arrowStyle: ScreenshotSupport.ArrowStyleID {
@@ -142,6 +161,18 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
     let scale: CGFloat
     /// Sampled mosaics of the base image, one per blur level in use.
     private(set) var pixelated: [Int: CGImage] = [:]
+    /// Small soft blurs of the base image, one per blur level in use.
+    private(set) var softBlurred: [Int: CGImage] = [:]
+    private let eraseCache = ScreenshotRenderer.EraseCache()
+
+    /// What blur areas paint from, shared by the canvas and the exporter.
+    var blurSources: ScreenshotRenderer.BlurSources {
+        ScreenshotRenderer.BlurSources(mosaics: pixelated,
+                                       softBlurs: softBlurred,
+                                       image: baseImage,
+                                       eraseCache: eraseCache,
+                                       textRuns: textRuns)
+    }
 
     private var undoStack: [(image: CGImage, annotations: [ScreenshotSupport.Annotation])] = []
     private var redoStack: [(image: CGImage, annotations: [ScreenshotSupport.Annotation])] = []
@@ -190,6 +221,9 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
             defaults.integer(forKey: DefaultsKey.screenshotLastTextSize))
         blurLevel = ScreenshotSupport.BlurStrength.startingLevel(
             remembered: defaults.integer(forKey: DefaultsKey.screenshotLastBlurLevel))
+        blurStyle = ScreenshotSupport.BlurStyleID.sanitized(
+            defaults.string(forKey: DefaultsKey.screenshotLastBlurStyle))
+        blurTextOnly = defaults.bool(forKey: DefaultsKey.screenshotLastBlurTextOnly)
         arrowStyle = ScreenshotSupport.ArrowStyleID.sanitized(
             defaults.string(forKey: DefaultsKey.screenshotLastArrowStyle))
         sticker = ScreenshotSupport.StickerID.sanitized(
@@ -367,56 +401,68 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
         let image = baseImage
         let width = CGFloat(image.width)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            var words: [ScreenshotSupport.RecognizedWord] = []
-            let maximumTilePixels = 12_000_000
-            let tileHeight = min(image.height,
-                                 max(512, min(4096,
-                                     maximumTilePixels / max(image.width, 1))))
-            var tileY = 0
+            let tiles = ScreenshotSupport.recognitionTiles(width: image.width, height: image.height)
+            // One read per band, nil for a band recognition failed on. A band
+            // left out or failed keeps text only areas covering all of
+            // themselves, because its text is unknown.
+            var reads: [[ScreenshotSupport.BandWord]?] = []
             var lineOffset = 0
-            while tileY < image.height {
+            for band in tiles {
                 guard let current = self, image === current.baseImage else { return }
-                let currentHeight = min(tileHeight, image.height - tileY)
-                guard let tile = image.cropping(to: CGRect(x: 0,
-                                                           y: tileY,
-                                                           width: image.width,
-                                                           height: currentHeight))
-                else { break }
+                let tileY = band.rect.minY
+                let currentHeight = band.rect.height
+                guard let tile = image.cropping(to: band.rect) else { break }
                 let request = VNRecognizeTextRequest()
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = true
                 request.automaticallyDetectsLanguage = true
                 let handler = VNImageRequestHandler(cgImage: tile, options: [:])
-                try? handler.perform([request])
+                do {
+                    try handler.perform([request])
+                } catch {
+                    reads.append(nil)
+                    continue
+                }
+                func imageRect(_ box: CGRect) -> CGRect {
+                    CGRect(x: box.minX * width,
+                           y: tileY + (1 - box.maxY) * currentHeight,
+                           width: box.width * width,
+                           height: box.height * currentHeight)
+                }
                 let observations = request.results ?? []
+                var read: [ScreenshotSupport.BandWord] = []
                 for (line, observation) in observations.enumerated() {
-                    guard let candidate = observation.topCandidates(1).first else { continue }
+                    let lineBox = imageRect(observation.boundingBox)
+                    // A line read without any text is still text to cover.
+                    guard let candidate = observation.topCandidates(1).first else {
+                        read.append(ScreenshotSupport.BandWord(text: "", rect: nil, lineBox: lineBox,
+                                                               line: lineOffset + line))
+                        continue
+                    }
                     let text = candidate.string
                     var searchStart = text.startIndex
                     for raw in text.split(separator: " ") {
                         let word = String(raw)
                         guard let range = text.range(of: word,
-                                                   range: searchStart..<text.endIndex),
-                              let box = try? candidate.boundingBox(for: range)?.boundingBox
+                                                   range: searchStart..<text.endIndex)
                         else { continue }
                         searchStart = range.upperBound
-                        let rect = CGRect(x: box.minX * width,
-                                          y: CGFloat(tileY)
-                                            + (1 - box.maxY) * CGFloat(currentHeight),
-                                          width: box.width * width,
-                                          height: box.height * CGFloat(currentHeight))
-                        words.append(ScreenshotSupport.RecognizedWord(
+                        let box = try? candidate.boundingBox(for: range)?.boundingBox
+                        read.append(ScreenshotSupport.BandWord(
                             text: word,
-                            rect: rect,
+                            rect: box.map(imageRect),
+                            lineBox: lineBox,
                             line: lineOffset + line))
                     }
                 }
+                reads.append(read)
                 lineOffset += observations.count
-                tileY += currentHeight
             }
+            let merged = ScreenshotSupport.mergedRecognition(reads, tiles: tiles)
             DispatchQueue.main.async { [weak self] in
                 guard let self, image === self.baseImage else { return }
-                self.textWords = words
+                self.textWords = merged.words
+                self.textRuns = merged.runs.map { $0 + (self.carriedRuns[ObjectIdentifier(image)] ?? []) }
             }
         }
     }
@@ -478,16 +524,26 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
         restore(next)
     }
 
+    /// Keeps carried runs only for captures the editor can still show.
+    private func pruneCarriedRuns() {
+        let live = Set([ObjectIdentifier(baseImage)] + (undoStack + redoStack).map { ObjectIdentifier($0.image) })
+        carriedRuns = carriedRuns.filter { live.contains($0.key) }
+    }
+
     private func restore(_ state: (image: CGImage, annotations: [ScreenshotSupport.Annotation])) {
         if state.image !== baseImage {
             baseImage = state.image
             pixelated = [:]
+            softBlurred = [:]
+            // The runs belong to the other image. Text only areas cover all
+            // of themselves until this one is read.
+            textRuns = nil
             clearTextSelection()
             recognizeText()
             recognizeQRCodes()
         }
         annotations = state.annotations
-        ensurePixelatedForAnnotations()
+        ensureBlurSamplesForAnnotations()
         selectedID = nil
         editingTextID = nil
         newTextID = nil
@@ -563,22 +619,29 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
         }
     }
 
-    private func applyBlurLevelToSelection() {
+    private func applyBlurToSelection() {
         guard let selectedID,
               let index = annotations.firstIndex(where: { $0.id == selectedID }),
-              annotations[index].tool == .pixelate,
-              annotations[index].blurLevel != blurLevel
+              annotations[index].tool == .pixelate
         else { return }
-        // The mosaic must exist before the mark points at it, or the redraw
-        // would show the area uncovered; without one the area keeps its level.
-        ensurePixelated(level: blurLevel)
-        guard pixelated[blurLevel] != nil else {
-            blurLevel = annotations[index].blurLevel
+        let mark = annotations[index]
+        guard mark.blurLevel != blurLevel
+                || mark.blurStyle != blurStyle
+                || mark.blurTextOnly != blurTextOnly
+        else { return }
+        // The sample must exist before the mark points at it, or the redraw
+        // would show the area uncovered. Without one the area keeps its look.
+        guard ensureBlurSample(blurStyle, level: blurLevel) else {
+            self.selectedID = nil
+            syncControls(to: mark)
+            self.selectedID = selectedID
             return
         }
         registerUndo()
         annotations[index].blurLevel = blurLevel
-        ensurePixelatedForAnnotations()
+        annotations[index].blurStyle = blurStyle
+        annotations[index].blurTextOnly = blurTextOnly
+        ensureBlurSamplesForAnnotations()
     }
 
     private func applyStickerToSelection() {
@@ -599,6 +662,8 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
         if let stroke = style.stroke { self.stroke = stroke }
         if let textSize = style.textSize { self.textSize = textSize }
         if let blurLevel = style.blurLevel { self.blurLevel = blurLevel }
+        if let blurStyle = style.blurStyle { self.blurStyle = blurStyle }
+        if let blurTextOnly = style.blurTextOnly { self.blurTextOnly = blurTextOnly }
         if let arrowStyle = style.arrowStyle { self.arrowStyle = arrowStyle }
         if annotation.tool == .sticker {
             sticker = ScreenshotSupport.StickerID.sanitized(annotation.text)
@@ -653,12 +718,13 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
             annotations.append(annotation)
             draftID = annotation.id
         case .rect, .ellipse, .highlight, .pixelate, .redact:
-            if tool == .pixelate { ensurePixelated(level: blurLevel) }
+            if tool == .pixelate { ensureBlurSample(blurStyle, level: blurLevel) }
             registerUndo()
             dragRegistered = true
             let annotation = ScreenshotSupport.Annotation(
                 tool: tool, rect: CGRect(origin: point, size: .zero),
-                color: color, stroke: stroke, blurLevel: blurLevel)
+                color: color, stroke: stroke, blurLevel: blurLevel,
+                blurStyle: blurStyle, blurTextOnly: blurTextOnly)
             annotations.append(annotation)
             draftID = annotation.id
         case .text, .sticker, .counter:
@@ -1048,16 +1114,27 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
             return
         }
         registerUndo()
+        let previousImage = baseImage
         baseImage = cropped
         pixelated = [:]
+        softBlurred = [:]
         clearTextSelection()
+        let croppedBounds = CGRect(origin: .zero, size: CGSize(width: cropped.width,
+                                                               height: cropped.height))
         textWords = textWords.compactMap { word in
             let moved = word.rect.offsetBy(dx: -cropRect.minX, dy: -cropRect.minY)
-            guard moved.intersects(CGRect(origin: .zero, size: CGSize(width: cropped.width,
-                                                                      height: cropped.height)))
-            else { return nil }
+            guard moved.intersects(croppedBounds) else { return nil }
             return ScreenshotSupport.RecognizedWord(text: word.text, rect: moved, line: word.line)
         }
+        // Moved runs still cover the cropped capture's text, including what
+        // the words alone miss, and stay once it is read again. If the old
+        // one was never read, text only areas keep waiting for recognition.
+        let previousCarried = carriedRuns[ObjectIdentifier(previousImage)]
+        textRuns = ScreenshotSupport.croppedRuns(textRuns, by: cropRect)
+        if let carried = textRuns ?? ScreenshotSupport.croppedRuns(previousCarried, by: cropRect), !carried.isEmpty {
+            carriedRuns[ObjectIdentifier(cropped)] = carried
+        }
+        pruneCarriedRuns()
         annotations = annotations.map { annotation in
             var moved = annotation
             moved.rect = annotation.rect.offsetBy(dx: -cropRect.minX, dy: -cropRect.minY)
@@ -1066,7 +1143,7 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
             }
             return moved
         }
-        ensurePixelatedForAnnotations()
+        ensureBlurSamplesForAnnotations()
         cropDraft = nil
         selectedID = nil
         tool = .select
@@ -1077,12 +1154,12 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
     // MARK: - Output
 
     func exportImage(withBackdrop: Bool = true) -> ScreenshotRenderer.Export? {
-        ensurePixelatedForAnnotations()
+        ensureBlurSamplesForAnnotations()
         let downscale = UserDefaults.standard.bool(forKey: DefaultsKey.screenshotDownscale)
         return ScreenshotRenderer.renderExport(
             baseImage: baseImage,
             annotations: annotations,
-            pixelated: pixelated,
+            blurSources: blurSources,
             scale: scale,
             annotationShadowsEnabled: annotationShadowsEnabled,
             watermark: watermarkStyle,
@@ -1092,18 +1169,34 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
             downscaleTo1x: downscale)
     }
 
-    private func ensurePixelated(level: Int) {
-        guard pixelated[level] == nil,
-              let mosaic = ScreenshotRenderer.pixelatedImage(from: baseImage, level: level)
-        else { return }
-        pixelated[level] = mosaic
+    /// Makes the sample a blur area of this style and level paints from, and
+    /// says whether it is there. Erasing reads the capture and needs none.
+    @discardableResult
+    private func ensureBlurSample(_ style: ScreenshotSupport.BlurStyleID, level: Int) -> Bool {
+        switch style {
+        case .pixelate:
+            if pixelated[level] == nil {
+                pixelated[level] = ScreenshotRenderer.pixelatedImage(from: baseImage, level: level)
+            }
+            return pixelated[level] != nil
+        case .blur:
+            if softBlurred[level] == nil {
+                softBlurred[level] = ScreenshotRenderer.softBlurredImage(from: baseImage, level: level)
+            }
+            return softBlurred[level] != nil
+        case .erase:
+            return true
+        }
     }
 
-    /// Keeps a sampled mosaic for each level in use and drops the rest.
-    private func ensurePixelatedForAnnotations() {
-        let levels = ScreenshotSupport.mosaicLevels(for: annotations)
-        pixelated = pixelated.filter { levels.contains($0.key) }
-        for level in levels { ensurePixelated(level: level) }
+    /// Keeps a sample for each style and level in use and drops the rest.
+    private func ensureBlurSamplesForAnnotations() {
+        let mosaicLevels = ScreenshotSupport.mosaicLevels(for: annotations)
+        let softBlurLevels = ScreenshotSupport.softBlurLevels(for: annotations)
+        pixelated = pixelated.filter { mosaicLevels.contains($0.key) }
+        softBlurred = softBlurred.filter { softBlurLevels.contains($0.key) }
+        for level in mosaicLevels { ensureBlurSample(.pixelate, level: level) }
+        for level in softBlurLevels { ensureBlurSample(.blur, level: level) }
     }
 }
 
@@ -1392,7 +1485,9 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
         if let tiff = payload?.tiff {
             item.setData(tiff, forType: .tiff)
         }
-        return pasteboard.writeObjects([item])
+        guard pasteboard.writeObjects([item]) else { return false }
+        pasteboard.declareVorssaintSource()
+        return true
     }
 
     struct ClipboardPayload: Sendable {
@@ -1422,7 +1517,9 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
         if let tiff = payload.tiff {
             item.setData(tiff, forType: .tiff)
         }
-        return pasteboard.writeObjects([item])
+        guard pasteboard.writeObjects([item]) else { return false }
+        pasteboard.declareVorssaintSource()
+        return true
     }
 
     func save() {
@@ -1480,6 +1577,7 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
         guard !text.isEmpty else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
+        pasteboard.declareVorssaintSource()
         pasteboard.setString(text, forType: .string)
         QuickToolHUD.show(icon: "text.viewfinder", message: L10n.shared.s.ocrCopied)
     }

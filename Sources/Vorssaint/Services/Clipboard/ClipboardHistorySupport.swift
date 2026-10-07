@@ -4,38 +4,6 @@
 import AppKit
 import SwiftUI
 
-enum ClipboardHistoryWindowSizing {
-    static let compactDefault = NSSize(width: 560, height: 420)
-    static let compactMinimum = NSSize(width: 560, height: 300)
-    static let previewExtra = NSSize(width: 280, height: 80)
-
-    static func minimumSize(preview: Bool) -> NSSize {
-        NSSize(width: compactMinimum.width + (preview ? previewExtra.width : 0),
-               height: compactMinimum.height + (preview ? previewExtra.height : 0))
-    }
-
-    static func contentSize(preview: Bool, savedWidth: Double, savedHeight: Double,
-                            visibleFrame: NSRect) -> NSSize {
-        let minimum = minimumSize(preview: preview)
-        let width = savedWidth.isFinite && savedWidth >= compactMinimum.width
-            ? CGFloat(savedWidth) : compactDefault.width
-        let height = savedHeight.isFinite && savedHeight >= compactMinimum.height
-            ? CGFloat(savedHeight) : compactDefault.height
-        let requested = NSSize(width: width + (preview ? previewExtra.width : 0),
-                               height: height + (preview ? previewExtra.height : 0))
-        return NSSize(width: max(minimum.width, min(requested.width, visibleFrame.width - 32)),
-                      height: max(minimum.height, min(requested.height, visibleFrame.height - 32)))
-    }
-
-    static func savedCompactSize(from contentSize: NSSize, preview: Bool) -> NSSize? {
-        let width = contentSize.width - (preview ? previewExtra.width : 0)
-        let height = contentSize.height - (preview ? previewExtra.height : 0)
-        guard width.isFinite, height.isFinite,
-              width >= compactMinimum.width, height >= compactMinimum.height else { return nil }
-        return NSSize(width: width, height: height)
-    }
-}
-
 /// Main-thread capture admission. Expiring a result does not release the
 /// actual queued read; stop/start must not release it either.
 struct ClipboardHistoryCaptureState {
@@ -122,6 +90,10 @@ struct ClipboardHistoryEntry: Codable, Equatable, Identifiable {
     let imageHash: String?
     let imageWidth: Int?
     let imageHeight: Int?
+    /// The app the copy came from, when the history could tell. Optional, so
+    /// a history written before it existed still decodes, and an older
+    /// version reading this file skips the key.
+    var sourceBundleID: String?
 
     init(id: UUID = UUID(),
          text: String,
@@ -175,6 +147,18 @@ struct ClipboardHistoryEntry: Codable, Equatable, Identifiable {
         }
     }
 
+    /// `preview` with its line breaks kept, for a card tall enough to show
+    /// the shape of a snippet or a list. Tabs still become spaces.
+    var cardPreview: String {
+        guard kind == .text else { return preview }
+        let prefix = text.prefix(ClipboardHistoryEditing.previewCharacters)
+        let spaced = prefix
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let visible = spaced.isEmpty ? String(prefix) : spaced
+        return prefix.endIndex == text.endIndex ? visible : visible + "…"
+    }
+
     /// The color a text entry spells out, if that is all it holds.
     var color: ColorValue? {
         kind == .text ? ColorValue(text: text) : nil
@@ -225,6 +209,7 @@ struct ClipboardHistoryEntry: Codable, Equatable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, text, copiedAt, pinnedAt, kind, filePaths, imageFile, imageHash, imageWidth, imageHeight
+        case sourceBundleID
     }
 
     init(from decoder: Decoder) throws {
@@ -240,6 +225,7 @@ struct ClipboardHistoryEntry: Codable, Equatable, Identifiable {
         imageHash = try container.decodeIfPresent(String.self, forKey: .imageHash)
         imageWidth = try container.decodeIfPresent(Int.self, forKey: .imageWidth)
         imageHeight = try container.decodeIfPresent(Int.self, forKey: .imageHeight)
+        sourceBundleID = try container.decodeIfPresent(String.self, forKey: .sourceBundleID)
     }
 }
 
@@ -834,6 +820,27 @@ enum ClipboardHistoryPasteboardText {
         guard let raw else { return nil }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
+    }
+}
+
+extension NSPasteboard.PasteboardType {
+    /// The nspasteboard.org mark naming the app that wrote the pasteboard,
+    /// read beside the concealed mark below.
+    static let source = NSPasteboard.PasteboardType("org.nspasteboard.source")
+    /// Added by the system to a copy that arrived from another device over
+    /// Universal Clipboard, which no app on this Mac made.
+    static let remoteClipboard = NSPasteboard.PasteboardType("com.apple.is-remote-clipboard")
+}
+
+extension NSPasteboard {
+    /// Signs a write Vorssaint makes for itself (copied OCR text, a Command
+    /// Bar answer, a color), so the clipboard history does not credit it to
+    /// whichever app happens to be in front. Called once the pasteboard is
+    /// cleared, before or after the content: either way the mark joins the
+    /// single item instead of adding one.
+    func declareVorssaintSource() {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        setString(bundleID, forType: .source)
     }
 }
 

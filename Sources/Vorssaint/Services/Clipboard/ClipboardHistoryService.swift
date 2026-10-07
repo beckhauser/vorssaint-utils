@@ -80,8 +80,6 @@ final class ClipboardHistoryService: ObservableObject {
     private var copyInFlight = false
     private static let pasteboardTimeout: TimeInterval = 5
     private var panel: NSPanel?
-    private var panelResizeObserver: NSObjectProtocol?
-    private var panelSizeLimit: ClipboardPanelSizeLimit?
     private var keyMonitor: Any?
     private var localClickMonitor: Any?
     private var outsideClickMonitor: Any?
@@ -616,14 +614,16 @@ final class ClipboardHistoryService: ObservableObject {
     /// window closes now and a stale entry simply leaves the clipboard as the
     /// user left it.
     func copyOnlyQuickEntry(_ entry: ClipboardHistoryEntry) {
-        copy(entry) { if !$0 { NSSound.beep() } }
+        // Closing first lets its last check read what the panel copied
+        // before this write replaces it.
         hideHistoryWindow()
+        copy(entry) { if !$0 { NSSound.beep() } }
         pasteTargetApp = nil
     }
 
     func copyOnlyQuickEntries(_ selectedEntries: [ClipboardHistoryEntry]) {
-        copy(selectedEntries) { if !$0 { NSSound.beep() } }
         hideHistoryWindow()
+        copy(selectedEntries) { if !$0 { NSSound.beep() } }
         pasteTargetApp = nil
     }
 
@@ -664,7 +664,7 @@ final class ClipboardHistoryService: ObservableObject {
         case text(String)
     }
 
-    private func captureIfChanged() {
+    private func captureIfChanged(historyPanelClosing: Bool = false) {
         guard isRunning, let generation = captureState.begin() else { return }
         // On start (including stop/start during a blocked read), establish a
         // fresh baseline before capturing. Old completions cannot consume it.
@@ -672,8 +672,13 @@ final class ClipboardHistoryService: ObservableObject {
         let sinceChangeCount = lastChangeCount
         let includeImagesFiles = UserDefaults.standard.bool(
             forKey: DefaultsKey.clipboardHistoryIncludeImagesFiles)
+        // Taken before the read, which may answer only after the panel took
+        // the keys: a copy made before it opened came from the app behind.
+        // A closing panel counts as holding them, since the click outside
+        // that closes it may already have taken them away.
+        let historyPanelIsKey = historyPanelClosing || panel?.isKeyWindow == true
         GeneralPasteboardAccess.shared.async(timeout: Self.pasteboardTimeout, { isExpired
-            -> (changeCount: Int, content: CapturedContent?)? in
+            -> (changeCount: Int, content: CapturedContent?, declaredSource: String?, remote: Bool)? in
             let changeCount = NSPasteboard.general.changeCount
             guard !isExpired() else { return nil }
             // Read during a baseline too, not only on a detected change: a
@@ -685,7 +690,9 @@ final class ClipboardHistoryService: ObservableObject {
             let content: CapturedContent? = (baseline || changeCount != sinceChangeCount)
                 ? Self.readPasteboard(includeImagesFiles: includeImagesFiles)
                 : nil
-            return (changeCount, content)
+            return (changeCount, content,
+                    content == nil ? nil : NSPasteboard.general.string(forType: .source),
+                    content != nil && NSPasteboard.general.types?.contains(.remoteClipboard) == true)
         }, then: { [weak self] result in
             guard let self else { return }
             guard let result else {
@@ -707,7 +714,9 @@ final class ClipboardHistoryService: ObservableObject {
             }
             // Preserve exclusion over the whole time since the previous
             // accepted check, including any read that expired in between.
-            let excludedSource = ClipboardIgnoredApps.shared.excludedSourceSinceLastCheck()
+            let source = ClipboardIgnoredApps.shared.sourceSinceLastCheck(
+                declared: result.declaredSource, remote: result.remote,
+                historyPanelIsKey: historyPanelIsKey, historyPanelClosing: historyPanelClosing)
             guard let accepted = ClipboardHistoryChangeCount.accepted(
                 read: result.changeCount, since: sinceChangeCount, last: self.lastChangeCount
             ) else { return }
@@ -718,11 +727,14 @@ final class ClipboardHistoryService: ObservableObject {
             // must not keep advertising the previous entry as still current.
             // A recording path below sets this back.
             self.latestPasteboardEntry = nil
-            guard !excludedSource, let content = result.content else { return }
+            guard !source.excluded, let content = result.content else { return }
+            // A copy out of the history's own panel, such as text selected in
+            // the preview, is of an entry already there, and its app stays.
+            let keepsSource = source.fromHistoryPanel
             switch content {
-            case .files(let paths): self.promoteFiles(paths)
-            case .image(let image): self.promoteImage(image)
-            case .text(let text): self.promote(text)
+            case .files(let paths): self.promoteFiles(paths, source: source.bundleID, keepsSource: keepsSource)
+            case .image(let image): self.promoteImage(image, source: source.bundleID, keepsSource: keepsSource)
+            case .text(let text): self.promote(text, source: source.bundleID, keepsSource: keepsSource)
             }
         }, didFinish: { [weak self] _ in
             self?.captureState.finish()
@@ -809,7 +821,8 @@ final class ClipboardHistoryService: ObservableObject {
         return (data, rep.pixelsWide, rep.pixelsHigh)
     }
 
-    private func promoteImage(_ image: (data: Data, width: Int, height: Int)) {
+    private func promoteImage(_ image: (data: Data, width: Int, height: Int), source: String?,
+                              keepsSource: Bool) {
         let hash = Self.sha256Hex(image.data)
         if let existing = entries.first(where: { $0.kind == .image && $0.imageHash == hash }) {
             entries.removeAll { $0.id == existing.id }
@@ -821,7 +834,8 @@ final class ClipboardHistoryService: ObservableObject {
                                                  imageFile: existing.imageFile,
                                                  imageHash: hash,
                                                  imageWidth: existing.imageWidth,
-                                                 imageHeight: existing.imageHeight))
+                                                 imageHeight: existing.imageHeight),
+                           source: keepsSource ? existing.sourceBundleID : source)
         } else {
             guard let name = ClipboardImageStore.store(image.data) else { return }
             insertPromoted(ClipboardHistoryEntry(text: "",
@@ -829,14 +843,14 @@ final class ClipboardHistoryService: ObservableObject {
                                                  imageFile: name,
                                                  imageHash: hash,
                                                  imageWidth: image.width,
-                                                 imageHeight: image.height))
+                                                 imageHeight: image.height), source: source)
         }
         normalizeEntryOrder()
         trimToLimit()
         save()
     }
 
-    private func promoteFiles(_ paths: [String]) {
+    private func promoteFiles(_ paths: [String], source: String?, keepsSource: Bool) {
         let existing = entries.first(where: { $0.kind == .files && $0.filePaths == paths })
         entries.removeAll { $0.kind == .files && $0.filePaths == paths }
         if let existing {
@@ -845,9 +859,10 @@ final class ClipboardHistoryService: ObservableObject {
                                                  copiedAt: Date(),
                                                  pinnedAt: existing.pinnedAt,
                                                  kind: .files,
-                                                 filePaths: paths))
+                                                 filePaths: paths),
+                           source: keepsSource ? existing.sourceBundleID : source)
         } else {
-            insertPromoted(ClipboardHistoryEntry(text: "", kind: .files, filePaths: paths))
+            insertPromoted(ClipboardHistoryEntry(text: "", kind: .files, filePaths: paths), source: source)
         }
         normalizeEntryOrder()
         trimToLimit()
@@ -879,7 +894,7 @@ final class ClipboardHistoryService: ObservableObject {
         return (scheme == "http" || scheme == "https") && url.host != nil
     }
 
-    private func promote(_ raw: String) {
+    private func promote(_ raw: String, source: String?, keepsSource: Bool) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.count <= ClipboardHistoryEditing.maxCharacters else { return }
         if UserDefaults.standard.bool(forKey: DefaultsKey.clipboardHistorySkipSensitive),
@@ -893,9 +908,10 @@ final class ClipboardHistoryService: ObservableObject {
             insertPromoted(ClipboardHistoryEntry(id: existing.id,
                                                  text: text,
                                                  copiedAt: Date(),
-                                                 pinnedAt: existing.pinnedAt))
+                                                 pinnedAt: existing.pinnedAt),
+                           source: keepsSource ? existing.sourceBundleID : source)
         } else {
-            insertPromoted(ClipboardHistoryEntry(text: text))
+            insertPromoted(ClipboardHistoryEntry(text: text), source: source)
         }
         normalizeEntryOrder()
         trimToLimit()
@@ -921,7 +937,10 @@ final class ClipboardHistoryService: ObservableObject {
         entries.firstIndex { !$0.isPinned } ?? entries.endIndex
     }
 
-    private func insertPromoted(_ entry: ClipboardHistoryEntry) {
+    /// A copy taken again takes the app it came from this time.
+    private func insertPromoted(_ entry: ClipboardHistoryEntry, source: String?) {
+        var entry = entry
+        entry.sourceBundleID = source
         if entry.isPinned {
             entries.insert(entry, at: 0)
         } else {
@@ -1158,11 +1177,6 @@ final class ClipboardHistoryService: ObservableObject {
         guard presented != quickPreviewPresented else { return }
         quickPreviewPresented = presented
         UserDefaults.standard.set(presented, forKey: DefaultsKey.clipboardHistoryQuickPreview)
-        guard let panel, panel.isVisible else { return }
-        let previousFrame = panel.frame
-        resize(panel, to: preferredPanelSize(visibleFrame: panel.screen?.visibleFrame
-                                            ?? NSScreen.pointerVisibleFrame),
-               around: previousFrame, animated: true)
     }
 
     func toggleHistoryWindow() {
@@ -1185,12 +1199,18 @@ final class ClipboardHistoryService: ObservableObject {
         position(panel)
         installKeyMonitor(for: panel)
         installDismissMonitors(for: panel)
+        // A copy made just before opening is read while the panel does not
+        // hold the keys yet, so it keeps the app it came from.
+        captureIfChanged()
         panel.alphaValue = 1
         panel.orderFrontRegardless()
         panel.makeKey()
     }
 
     func hideHistoryWindow() {
+        // What was copied in the panel is read now, as the panel's, so a copy
+        // made right after in the app behind is credited to that app.
+        if panel?.isVisible == true { captureIfChanged(historyPanelClosing: true) }
         removeKeyMonitor()
         removeDismissMonitors()
         // Ordering out keeps an open confirmation attached, and it would come
@@ -1255,9 +1275,8 @@ final class ClipboardHistoryService: ObservableObject {
 
     private func ensurePanel() -> NSPanel {
         if let panel { return panel }
-        let initialSize = preferredPanelSize(visibleFrame: NSScreen.pointerVisibleFrame)
-        let panel = OverlayPanel(contentRect: NSRect(origin: .zero, size: initialSize),
-                                 styleMask: [.titled, .closable, .resizable,
+        let panel = OverlayPanel(contentRect: .zero,
+                                 styleMask: [.titled, .closable,
                                              .fullSizeContentView, .nonactivatingPanel],
                                  backing: .buffered,
                                  defer: false)
@@ -1275,70 +1294,22 @@ final class ClipboardHistoryService: ObservableObject {
         panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        let sizeLimit = ClipboardPanelSizeLimit { [weak self] in self?.quickPreviewPresented ?? false }
-        panel.delegate = sizeLimit
-        panelSizeLimit = sizeLimit
         let host = NSHostingController(rootView: ClipboardQuickPanelView())
         // AppKit owns the window size; SwiftUI fills its content view.
         host.sizingOptions = []
         panel.contentViewController = host
-        panel.setFrame(NSRect(origin: .zero, size: initialSize),
-                       display: false)
-        panelResizeObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didEndLiveResizeNotification, object: panel, queue: .main
-        ) { [weak self, weak panel] _ in
-            guard let self, let panel else { return }
-            self.savePanelSize(panel)
-        }
         self.panel = panel
         return panel
     }
 
-    private func preferredPanelSize(visibleFrame: NSRect) -> NSSize {
-        let defaults = UserDefaults.standard
-        return ClipboardHistoryWindowSizing.contentSize(
-            preview: quickPreviewPresented,
-            savedWidth: defaults.double(forKey: DefaultsKey.clipboardHistoryWindowWidth),
-            savedHeight: defaults.double(forKey: DefaultsKey.clipboardHistoryWindowHeight),
-            visibleFrame: visibleFrame)
-    }
-
-    private func savePanelSize(_ panel: NSPanel) {
-        guard let size = ClipboardHistoryWindowSizing.savedCompactSize(
-            from: panel.contentRect(forFrameRect: panel.frame).size,
-            preview: quickPreviewPresented
-        ) else { return }
-        UserDefaults.standard.set(Double(size.width), forKey: DefaultsKey.clipboardHistoryWindowWidth)
-        UserDefaults.standard.set(Double(size.height), forKey: DefaultsKey.clipboardHistoryWindowHeight)
-    }
-
+    /// A shelf of cards along the bottom of the screen the pointer is on,
+    /// placed again on every open so a changed display never strands it.
     private func position(_ panel: NSPanel) {
         let screen = NSScreen.pointerVisibleFrame
-        let size = preferredPanelSize(visibleFrame: screen)
-        let x = screen.midX - size.width / 2
-        let y = min(screen.maxY - size.height - 54, screen.midY - size.height / 2)
-        panel.setFrame(NSRect(x: max(screen.minX + 16, min(x, screen.maxX - size.width - 16)),
-                              y: max(screen.minY + 16, y),
-                              width: size.width,
-                              height: size.height),
+        panel.setFrame(NSRect(x: screen.minX + 16, y: screen.minY + 8,
+                              width: screen.width - 32, height: min(318, screen.height - 16)),
                        display: true,
                        animate: false)
-    }
-
-    private func resize(_ panel: NSPanel, to contentSize: NSSize,
-                        around current: NSRect, animated: Bool) {
-        var target = NSRect(origin: .zero, size: contentSize)
-        target.origin.x = current.midX - target.width / 2
-        target.origin.y = current.midY - target.height / 2
-
-        let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.pointerVisibleFrame
-        target.origin.x = max(visibleFrame.minX + 16,
-                              min(target.origin.x, visibleFrame.maxX - target.width - 16))
-        target.origin.y = max(visibleFrame.minY + 16,
-                              min(target.origin.y, visibleFrame.maxY - target.height - 16))
-        panel.setFrame(target,
-                       display: true,
-                       animate: animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
     private func installKeyMonitor(for panel: NSPanel) {
@@ -1415,11 +1386,15 @@ final class ClipboardHistoryService: ObservableObject {
                 self.removeSelectedQuickEntries()
                 return nil
             }
-            if event.keyCode == UInt16(kVK_DownArrow) || (modifiers == [.control] && key == "n") {
+            // The cards run left to right. A plain arrow walks them; with a
+            // modifier it stays with the search field's caret.
+            if event.keyCode == UInt16(kVK_DownArrow) || (modifiers == [.control] && key == "n")
+                || (modifiers.isEmpty && event.keyCode == UInt16(kVK_RightArrow)) {
                 self.moveQuickSelection(1)
                 return nil
             }
-            if event.keyCode == UInt16(kVK_UpArrow) || (modifiers == [.control] && key == "p") {
+            if event.keyCode == UInt16(kVK_UpArrow) || (modifiers == [.control] && key == "p")
+                || (modifiers.isEmpty && event.keyCode == UInt16(kVK_LeftArrow)) {
                 self.moveQuickSelection(-1)
                 return nil
             }
@@ -1745,23 +1720,5 @@ enum ClipboardImageStore {
             try? FileManager.default.removeItem(at: file)
             thumbnails.removeObject(forKey: file.lastPathComponent as NSString)
         }
-    }
-}
-
-/// The hosting view rewrites the window's size limits on its first layout
-/// pass, so a contentMinSize set on the panel is lost. Enforce the minimum
-/// while the user resizes instead.
-private final class ClipboardPanelSizeLimit: NSObject, NSWindowDelegate {
-    private let preview: () -> Bool
-
-    init(preview: @escaping () -> Bool) {
-        self.preview = preview
-    }
-
-    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        let minimum = sender.frameRect(forContentRect: NSRect(
-            origin: .zero, size: ClipboardHistoryWindowSizing.minimumSize(preview: preview()))).size
-        return NSSize(width: max(minimum.width, frameSize.width),
-                      height: max(minimum.height, frameSize.height))
     }
 }

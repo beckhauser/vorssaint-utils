@@ -533,7 +533,6 @@ struct Strings {
     let urlCleanerManualTitle: String
     let urlCleanerInputPlaceholder: String
     let urlCleanerOutputPlaceholder: String
-    let urlCleanerCleanButton: String
     let urlCleanerPasteButton: String
     let urlCleanerCopyButton: String
     let urlCleanerClearButton: String
@@ -1254,6 +1253,7 @@ struct Strings {
     let urlCleanerRulesAddButton: String
     let urlCleanerRulesRemoveButton: String
     let urlCleanerRulesRemoveSiteButton: String
+    let urlCleanerRulesRestoreSiteButton: String
     let urlCleanerRemovedFormat: String            // + comma separated names
     let switcherSearchPin: String
     let switcherSearchPinCaption: String
@@ -1663,7 +1663,6 @@ extension Strings {
         urlCleanerManualTitle: "Limpar agora",
         urlCleanerInputPlaceholder: "Cole uma URL",
         urlCleanerOutputPlaceholder: "A URL limpa aparece aqui",
-        urlCleanerCleanButton: "Limpar",
         urlCleanerPasteButton: "Colar",
         urlCleanerCopyButton: "Copiar",
         urlCleanerClearButton: "Limpar campo",
@@ -2351,6 +2350,7 @@ extension Strings {
         urlCleanerRulesAddButton: "Adicionar",
         urlCleanerRulesRemoveButton: "Excluir nome",
         urlCleanerRulesRemoveSiteButton: "Desativar todas as regras deste site",
+        urlCleanerRulesRestoreSiteButton: "Ativar todas as regras deste site",
         urlCleanerRemovedFormat: "Removidos %@",
         switcherSearchPin: "Fixar busca com S",
         switcherSearchPinCaption: "S inicia uma busca e fixa o alternador aberto, assim digitar não produz mais caracteres especiais quando o atalho usa ⌥, e uma busca que comece com Q ou W não fecha a janela nem encerra o app por engano.",
@@ -2761,7 +2761,6 @@ extension Strings {
         urlCleanerManualTitle: "Clean now",
         urlCleanerInputPlaceholder: "Paste a URL",
         urlCleanerOutputPlaceholder: "The clean URL appears here",
-        urlCleanerCleanButton: "Clean",
         urlCleanerPasteButton: "Paste",
         urlCleanerCopyButton: "Copy",
         urlCleanerClearButton: "Clear field",
@@ -3449,6 +3448,7 @@ extension Strings {
         urlCleanerRulesAddButton: "Add",
         urlCleanerRulesRemoveButton: "Delete name",
         urlCleanerRulesRemoveSiteButton: "Turn off every rule for this site",
+        urlCleanerRulesRestoreSiteButton: "Turn on every rule for this site",
         urlCleanerRemovedFormat: "Removed %@",
         switcherSearchPin: "Pin search with S",
         switcherSearchPinCaption: "S starts a search and pins the switcher open, so typing no longer produces special characters when your shortcut uses ⌥, and a search starting with Q or W no longer closes the window or quits the app by mistake.",

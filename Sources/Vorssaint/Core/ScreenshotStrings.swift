@@ -63,6 +63,10 @@ struct ScreenshotFeatureStrings {
     let strokeLabel: String
     let fontSizeLabel: String
     let blurStrengthLabel: String
+    let toolBlur: String
+    let blurStyleLabel: String
+    let blurStyleErase: String
+    let blurTextOnly: String
     let shadowLabel: String
     let backdropLabel: String
     let backdropNone: String
@@ -305,6 +309,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Thickness",
         fontSizeLabel: "Font size",
         blurStrengthLabel: "Blur strength",
+        toolBlur: "Blur",
+        blurStyleLabel: "Blur style",
+        blurStyleErase: "Erase",
+        blurTextOnly: "Text only",
         shadowLabel: "Shadows",
         backdropLabel: "Background",
         backdropNone: "None",
@@ -497,6 +505,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Espessura",
         fontSizeLabel: "Tamanho da fonte",
         blurStrengthLabel: "Intensidade do desfoque",
+        toolBlur: "Desfocar",
+        blurStyleLabel: "Estilo do desfoque",
+        blurStyleErase: "Apagar",
+        blurTextOnly: "Apenas texto",
         shadowLabel: "Sombras",
         backdropLabel: "Fundo",
         backdropNone: "Nenhum",
@@ -689,6 +701,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Kalınlık",
         fontSizeLabel: "Yazı tipi boyutu",
         blurStrengthLabel: "Bulanıklık şiddeti",
+        toolBlur: "Bulanıklaştır",
+        blurStyleLabel: "Bulanıklık stili",
+        blurStyleErase: "Sil",
+        blurTextOnly: "Yalnızca metin",
         shadowLabel: "Gölgeler",
         backdropLabel: "Arka plan",
         backdropNone: "Yok",
@@ -881,6 +897,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Толщина",
         fontSizeLabel: "Размер шрифта",
         blurStrengthLabel: "Сила размытия",
+        toolBlur: "Размытие",
+        blurStyleLabel: "Стиль размытия",
+        blurStyleErase: "Стирание",
+        blurTextOnly: "Только текст",
         shadowLabel: "Тени",
         backdropLabel: "Фон",
         backdropNone: "Нет",
@@ -1073,6 +1093,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Grosor",
         fontSizeLabel: "Tamaño de fuente",
         blurStrengthLabel: "Intensidad del desenfoque",
+        toolBlur: "Desenfocar",
+        blurStyleLabel: "Estilo del desenfoque",
+        blurStyleErase: "Borrar",
+        blurTextOnly: "Solo texto",
         shadowLabel: "Sombras",
         backdropLabel: "Fondo",
         backdropNone: "Ninguno",
@@ -1265,6 +1289,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Hrúbka",
         fontSizeLabel: "Veľkosť písma",
         blurStrengthLabel: "Sila rozmazania",
+        toolBlur: "Rozmazať",
+        blurStyleLabel: "Štýl rozmazania",
+        blurStyleErase: "Vymazať",
+        blurTextOnly: "Iba text",
         shadowLabel: "Tiene",
         backdropLabel: "Pozadie",
         backdropNone: "Žiadne",
@@ -1457,6 +1485,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Stärke",
         fontSizeLabel: "Schriftgröße",
         blurStrengthLabel: "Unschärfestärke",
+        toolBlur: "Weichzeichnen",
+        blurStyleLabel: "Unschärfestil",
+        blurStyleErase: "Radieren",
+        blurTextOnly: "Nur Text",
         shadowLabel: "Schatten",
         backdropLabel: "Hintergrund",
         backdropNone: "Ohne",
@@ -1649,6 +1681,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Épaisseur",
         fontSizeLabel: "Taille de police",
         blurStrengthLabel: "Intensité du flou",
+        toolBlur: "Flouter",
+        blurStyleLabel: "Style du flou",
+        blurStyleErase: "Effacer",
+        blurTextOnly: "Texte seul",
         shadowLabel: "Ombres",
         backdropLabel: "Arrière-plan",
         backdropNone: "Aucun",
@@ -1841,6 +1877,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Spessore",
         fontSizeLabel: "Dimensione font",
         blurStrengthLabel: "Intensità sfocatura",
+        toolBlur: "Sfoca",
+        blurStyleLabel: "Stile sfocatura",
+        blurStyleErase: "Cancella",
+        blurTextOnly: "Solo testo",
         shadowLabel: "Ombre",
         backdropLabel: "Sfondo",
         backdropNone: "Nessuno",
@@ -2033,6 +2073,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "太さ",
         fontSizeLabel: "フォントサイズ",
         blurStrengthLabel: "ぼかしの強さ",
+        toolBlur: "ぼかし",
+        blurStyleLabel: "ぼかしの種類",
+        blurStyleErase: "消去",
+        blurTextOnly: "テキストのみ",
         shadowLabel: "影",
         backdropLabel: "背景",
         backdropNone: "なし",
@@ -2225,6 +2269,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "두께",
         fontSizeLabel: "글꼴 크기",
         blurStrengthLabel: "흐림 강도",
+        toolBlur: "흐림",
+        blurStyleLabel: "흐림 스타일",
+        blurStyleErase: "지우기",
+        blurTextOnly: "텍스트만",
         shadowLabel: "그림자",
         backdropLabel: "배경",
         backdropNone: "없음",
@@ -2417,6 +2465,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "粗细",
         fontSizeLabel: "字号",
         blurStrengthLabel: "模糊强度",
+        toolBlur: "模糊",
+        blurStyleLabel: "模糊样式",
+        blurStyleErase: "擦除",
+        blurTextOnly: "仅文字",
         shadowLabel: "阴影",
         backdropLabel: "背景",
         backdropNone: "无",
@@ -2609,6 +2661,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "粗細",
         fontSizeLabel: "字級",
         blurStrengthLabel: "模糊強度",
+        toolBlur: "模糊",
+        blurStyleLabel: "模糊樣式",
+        blurStyleErase: "擦除",
+        blurTextOnly: "僅文字",
         shadowLabel: "陰影",
         backdropLabel: "背景",
         backdropNone: "無",
@@ -2801,6 +2857,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "粗幼",
         fontSizeLabel: "字體大小",
         blurStrengthLabel: "模糊強度",
+        toolBlur: "模糊",
+        blurStyleLabel: "模糊樣式",
+        blurStyleErase: "擦除",
+        blurTextOnly: "僅文字",
         shadowLabel: "陰影",
         backdropLabel: "背景",
         backdropNone: "無",
@@ -2992,6 +3052,10 @@ extension ScreenshotFeatureStrings {
         strokeLabel: "Товщина",
         fontSizeLabel: "Розмір шрифту",
         blurStrengthLabel: "Сила розмиття",
+        toolBlur: "Розмиття",
+        blurStyleLabel: "Стиль розмиття",
+        blurStyleErase: "Стирання",
+        blurTextOnly: "Лише текст",
         shadowLabel: "Тіні",
         backdropLabel: "Фон",
         backdropNone: "Немає",
@@ -3127,6 +3191,14 @@ extension ScreenshotFeatureStrings {
 }
 
 extension ScreenshotFeatureStrings {
+    func blurStyleTitle(_ style: ScreenshotSupport.BlurStyleID) -> String {
+        switch style {
+        case .pixelate: return toolPixelate
+        case .blur: return toolBlur
+        case .erase: return blurStyleErase
+        }
+    }
+
     func arrowStyleTitle(_ style: ScreenshotSupport.ArrowStyleID) -> String {
         switch style {
         case .filled: return arrowStyleFilled

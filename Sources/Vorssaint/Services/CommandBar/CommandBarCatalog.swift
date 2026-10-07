@@ -1317,6 +1317,7 @@ enum CommandBarCatalog {
     private static func copyAnswer(_ value: String) {
         GeneralPasteboardAccess.shared.async({
             NSPasteboard.general.clearContents()
+            NSPasteboard.general.declareVorssaintSource()
             return NSPasteboard.general.setString(value, forType: .string)
         }, then: { copied in
             QuickToolHUD.show(icon: copied ? "doc.on.doc" : "exclamationmark.circle",
