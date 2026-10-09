@@ -350,6 +350,14 @@ enum ScreenshotSupport {
         return .shown(dismissInterval: confirmationPreviewDismissInterval(duration))
     }
 
+    /// Captures go to the shelf on their own only while the shelf is
+    /// installed and on, so a switched-off shelf never fills up unseen.
+    static func addsCapturesToShelf(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: DefaultsKey.screenshotAddToShelf)
+            && AppFeature.shelf.isAvailable(in: defaults)
+            && defaults.bool(forKey: DefaultsKey.shelfEnabled)
+    }
+
     /// Remaining stroke for the one-second countdown ring. Time drives the
     /// value directly so a delayed frame catches up instead of restarting the
     /// animation or leaving the ring frozen.
@@ -1026,6 +1034,28 @@ enum ScreenshotSupport {
                       height: min(maximum.height, max(minimum.height, preferred.height)))
     }
 
+    /// Select-to-copy utilities answer a mouse drag with a posted ⌘C, which in
+    /// the editor would copy the capture and close it under a stroke that has
+    /// not landed yet. A ⌘C another process posts while the pointer presses or
+    /// drags in the editor, or just after, is theirs; a pressed ⌘C always copies.
+    static let editorPostedCopyGrace: TimeInterval = 0.6
+
+    static func editorIgnoresPostedCopy(sourceProcessID: Int64,
+                                        ownProcessID: Int64,
+                                        now: TimeInterval,
+                                        lastPointerActivity: TimeInterval) -> Bool {
+        sourceProcessID != 0 && sourceProcessID != ownProcessID
+            && now - lastPointerActivity < editorPostedCopyGrace
+    }
+
+    /// A held Return or ⌘C repeats into what the first press left on screen:
+    /// Return that applied a crop, or chose Edit in the preview, would copy
+    /// the capture and close the editor a moment later.
+    static func editorIgnoresRepeatedOutputKey(keyCode: Int, command: Bool, isRepeat: Bool) -> Bool {
+        isRepeat && (keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter
+            || (command && keyCode == kVK_ANSI_C))
+    }
+
     /// Local key monitors normally receive the editor's window number, but
     /// AppKit can clear it while resolving a main-menu key equivalent such as
     /// Command-Z. In that case the key window still owns the event. Never use
@@ -1341,6 +1371,30 @@ enum ScreenshotSupport {
     }
 
     // MARK: - Annotation model
+
+    /// Movement in view points, so clicks keep the same tolerance at every
+    /// zoom. Only the pen keeps its path when it returns to the start; other
+    /// tools still discard a shape whose endpoints form a click.
+    struct EditorDrag {
+        private var start: CGPoint = .zero
+        private var stayedNearStart = true
+        private var endsNearStart = true
+
+        mutating func begin(at point: CGPoint) {
+            start = point
+            stayedNearStart = true
+            endsNearStart = true
+        }
+
+        mutating func update(to point: CGPoint) {
+            endsNearStart = hypot(point.x - start.x, point.y - start.y) < 7
+            stayedNearStart = stayedNearStart && endsNearStart
+        }
+
+        func isTap(for tool: Tool) -> Bool {
+            tool == .freehand ? stayedNearStart : endsNearStart
+        }
+    }
 
     enum Tool: String, CaseIterable {
         // Case order is the default rail order and therefore the default

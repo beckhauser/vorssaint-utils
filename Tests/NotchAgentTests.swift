@@ -28,12 +28,14 @@ enum NotchAgentTests {
         liveTurns(suite)
         reading(suite)
         AgentUsageReadTests.run(suite)
+        AgentUsagePollingTests.run(suite)
         AgentUsageArchiveTests.run(suite)
         AgentUsageArchiveSettleTests.run(suite)
         AgentUsageArchiveSaveTests.run(suite)
         claudeApp(suite)
         AgentCodexResetTests.run(suite)
         preferences(suite)
+        agentDefaults(suite)
         formatting(suite)
         AgentUsageEventDeliveryTests.run(suite)
         NotchAgentAnimationTests.run { suite.expect($0, $1) }
@@ -341,6 +343,15 @@ enum NotchAgentTests {
                      "a turn waiting on a shell command keeps working offline")
         _ = feed(result("toolu_web"))
         suite.expect(state.runningCommands == ["toolu_sh"], "another tool's result leaves the command running")
+        _ = feed(line(#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_web","content":"The pending command is toolu_sh"}]}}"#))
+        suite.expect(state.runningCommands == ["toolu_sh"],
+                     "another tool's output quoting the shell call does not complete it")
+        _ = feed(line(#"{"type":"user","isSidechain":true,"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_sh","content":"ok"}]}}"#))
+        suite.expect(state.runningCommands == ["toolu_sh"],
+                     "a subagent's tool result cannot complete the main turn's command")
+        _ = feed(line(#"{"type":"user","isMeta":true,"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_sh","content":"ok"}]}}"#))
+        suite.expect(state.runningCommands == ["toolu_sh"],
+                     "a meta tool result cannot complete the main turn's command")
         _ = feed(result("toolu_sh"))
         suite.expect(state.runningCommands.isEmpty, "the command's result means the next step needs the network")
         suite.expect(store.closeOfflineTurns(since: late, lasting: grace) && !store.live.contains { $0.provider == .claude },
@@ -2496,6 +2507,52 @@ enum NotchAgentTests {
 
     // MARK: Preferences and layout
 
+    private static func agentDefaults(_ suite: TestSuite) {
+        let domain = "com.vorssaint.tests.agent-defaults.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+
+        Defaults.migrateNotchAgentsOptIn(in: defaults, domainName: domain)
+        Defaults.migrateExistingNotchDefaults(in: defaults, domainName: domain)
+        Defaults.migrateNotchAgentsOptIn(in: defaults, domainName: domain)
+        let fresh = defaults.persistentDomain(forName: domain) ?? [:]
+        suite.expect(fresh[DefaultsKey.notchAgentsEnabled] == nil
+                     && Defaults.registeredDefaults[DefaultsKey.notchAgentsEnabled] as? Bool == false
+                     && fresh[DefaultsKey.notchInitialExtensionsInstalled] == nil,
+                     "fresh profiles keep Agents off on later launches and still install the other island extensions")
+        AppFeature.notchAgents.enableOnFirstInstall(in: defaults, savedValues: fresh)
+        suite.expect(defaults.bool(forKey: DefaultsKey.notchAgentsEnabled),
+                     "explicitly installing Agents enables it on a fresh profile")
+
+        defaults.removePersistentDomain(forName: domain)
+        defaults.set(true, forKey: DefaultsKey.notchEnabled)
+        Defaults.migrateNotchAgentsOptIn(in: defaults, domainName: domain)
+        Defaults.migrateExistingNotchDefaults(in: defaults, domainName: domain)
+        suite.expect(defaults.persistentDomain(forName: domain)?[DefaultsKey.notchAgentsEnabled] as? Bool == false,
+                     "an older island profile keeps the off default supplied by its original migration")
+
+        defaults.removePersistentDomain(forName: domain)
+        defaults.set(true, forKey: DefaultsKey.notchDefaultProfileInitialized)
+        Defaults.migrateNotchAgentsOptIn(in: defaults, domainName: domain)
+        suite.expect(defaults.persistentDomain(forName: domain)?[DefaultsKey.notchAgentsEnabled] as? Bool == true,
+                     "an existing profile keeps its formerly implicit on choice")
+        defaults.set(false, forKey: DefaultsKey.notchAgentsEnabled)
+        Defaults.migrateNotchAgentsOptIn(in: defaults, domainName: domain)
+        suite.expect(!defaults.bool(forKey: DefaultsKey.notchAgentsEnabled),
+                     "migration never turns Agents back on after a later opt-out")
+
+        for choice in [false, true] {
+            defaults.removePersistentDomain(forName: domain)
+            defaults.set(true, forKey: DefaultsKey.notchDefaultProfileInitialized)
+            defaults.set(choice, forKey: DefaultsKey.notchAgentsEnabled)
+            Defaults.migrateNotchAgentsOptIn(in: defaults, domainName: domain)
+            suite.expect(defaults.bool(forKey: DefaultsKey.notchAgentsEnabled) == choice,
+                         "migration preserves the explicit Agents choice \(choice)")
+        }
+        suite.expect(!SettingsBackupSupport.exportKeys().contains(DefaultsKey.notchAgentsOptInMigrated),
+                     "the local migration marker never travels in settings backups")
+    }
+
     private static func preferences(_ suite: TestSuite) {
         let domain = "com.vorssaint.tests.notch-agents"
         let defaults = UserDefaults(suiteName: domain)!
@@ -2504,7 +2561,7 @@ enum NotchAgentTests {
         for (key, value) in Defaults.registeredDefaults where key.hasPrefix("notch") { defaults.set(value, forKey: key) }
         for feature in AppFeature.allCases { defaults.set(true, forKey: feature.availabilityKey) }
         defaults.set(true, forKey: DefaultsKey.notchEnabled)
-        suite.expect(NotchAgentSupport.isEnabled(in: defaults), "installed AI agents start enabled in the island")
+        suite.expect(!NotchAgentSupport.isEnabled(in: defaults), "installing the island alone leaves AI agents off")
         defaults.set(false, forKey: DefaultsKey.notchAgentsEnabled)
         suite.expect(!NotchSupport.modules(in: defaults).contains(.agents) && !NotchAgentSupport.isEnabled(in: defaults)
                         && !NotchSupport.routes(.agents, in: defaults),
@@ -2554,9 +2611,9 @@ enum NotchAgentTests {
                     DefaultsKey.notchAgentsFinishAlert, DefaultsKey.notchAgentsFinishMinimum, DefaultsKey.notchAgentsLimitAlert,
                     DefaultsKey.notchAgentsLimitThreshold, DefaultsKey.notchAgentsDailyBudget, DefaultsKey.notchAgentsPriceUpdates]
         suite.expect(keys.allSatisfy { Defaults.registeredDefaults[$0] != nil } && SettingsBackupSupport.exportKeys().isSuperset(of: keys)
-                        && Defaults.registeredDefaults[DefaultsKey.notchAgentsEnabled] as? Bool == true
+                        && Defaults.registeredDefaults[DefaultsKey.notchAgentsEnabled] as? Bool == false
                         && Defaults.registeredDefaults[DefaultsKey.notchAgentsPriceUpdates] as? Bool == true,
-                     "every AI preference is registered and travels in backups, with the page on and prices kept current")
+                     "AI preferences travel in backups, with Agents opt-in and prices kept current when enabled")
         suite.expect(NotchAgentSupport.updatesPrices(in: defaults), "prices stay current unless turned off")
         defaults.set(false, forKey: DefaultsKey.notchAgentsPriceUpdates)
         suite.expect(!NotchAgentSupport.updatesPrices(in: defaults), "turning price updates off stops the download")

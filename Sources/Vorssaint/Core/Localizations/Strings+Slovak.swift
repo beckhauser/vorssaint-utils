@@ -899,6 +899,7 @@ extension Strings {
         supportIntroMessage: "Ak chcete podporiť vývoj finančne, Buy Me a Coffee je jediné miesto, kde sa to dá.",
         supportIntroStarButton: "Dajte Vorssaintu hviezdu na GitHube",
         supportIntroStarMessage: "Finančnú podporu nikdy neočakávam. Hviezda na GitHube pomáha objaviť Vorssaint viacerým ľuďom a pre jeho vývoj naozaj veľa znamená.",
+        supportIntroStarHint: "Hviezdička na GitHube tiež pomáha, aby Vorssaint objavilo viac ľudí, a veľa pre nás znamená.",
         supportIntroCoffeeButton: "Podporiť cez Buy Me a Coffee",
         supportIntroLaterButton: "Teraz nie",
         supportIntroDoneButton: "Hotovo",

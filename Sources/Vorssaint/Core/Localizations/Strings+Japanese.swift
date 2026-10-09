@@ -899,6 +899,7 @@ extension Strings {
         supportIntroMessage: "開発を金銭的に支援したい場合は、Buy Me a Coffee が唯一の窓口です。",
         supportIntroStarButton: "GitHub で Vorssaint にスターを付ける",
         supportIntroStarMessage: "金銭的な支援は決して必要ではありません。GitHub のスターは、より多くの人が Vorssaint を見つける助けになり、開発にも大きな力になります。",
+        supportIntroStarHint: "GitHub でのスターも、より多くの人が Vorssaint を知るきっかけになり、大きな励みになります。",
         supportIntroCoffeeButton: "Buy Me a Coffee で支援する",
         supportIntroLaterButton: "今はしない",
         supportIntroDoneButton: "完了",

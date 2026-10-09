@@ -78,7 +78,9 @@ enum CommandBarMath {
             let parts = input.split(separator: separator, omittingEmptySubsequences: false)
             guard parts.count >= 2, parts.count <= 3 else { continue }
             guard parts.allSatisfy({ part in
-                let digits = part.trimmingCharacters(in: .whitespaces)
+                // A date is written closed up. Numbers spaced around a minus
+                // or a slash are a sum: "100 - 20 - 30" is not a day.
+                let digits = separator == ":" ? part.trimmingCharacters(in: .whitespaces) : String(part)
                 return !digits.isEmpty && digits.count <= 4 && digits.allSatisfy(\.isNumber)
             }) else { continue }
             // Two plain numbers around a minus really can be a subtraction, so
@@ -365,7 +367,8 @@ enum CommandBarMath {
         var raw = written
         if let groupingOnly = separators.groupingOnly, written.contains(groupingOnly) {
             let integerPart = written.prefix { $0 != separators.decimal && $0 != separators.alternate }
-            guard looksLikeGrouping(String(integerPart), separator: groupingOnly) else { return nil }
+            guard looksLikeGrouping(String(integerPart), separator: groupingOnly),
+                  !written.dropFirst(integerPart.count).contains(groupingOnly) else { return nil }
             raw = written.filter { $0 != groupingOnly }
         }
         let decimalSeparator = separators.decimal

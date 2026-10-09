@@ -216,6 +216,7 @@ enum SettingsDirectory {
                                        keywords: [s.menuBarSpacingLabel, s.menuBarHideIconToggle],
                                        featureKeywords: [
                                         (.monitorMemory, [s.monitorMemoryPressureDot]),
+                                        (.monitorNetwork, [FeatureStrings.monitorLayout(language).networkSpeedUnit]),
                                         (.fanControl, [FeatureStrings.fanControl(language).menuBarTitle]),
                                        ]),
             ]),
@@ -299,6 +300,7 @@ enum SettingsDirectory {
                                        icon: "doc.on.clipboard",
                                        featureKeywords: [
                                         (.clipboardHistory, [FeatureStrings.clipboard(language).limit,
+                                                             FeatureStrings.clipboard(language).historyLayout,
                                                              FeatureStrings.clipboard(language).skipSensitive,
                                                              FeatureStrings.clipboard(language).pasteImageAsFile,
                                                              FeatureStrings.clipboard(language).autoClearEnable,

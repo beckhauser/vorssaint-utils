@@ -2,7 +2,66 @@
 // Copyright (C) 2026 Vorssaint
 
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
+
+/// How the history window shows its entries: a list in a window that keeps
+/// the size the user gives it, or a shelf of cards along the bottom of the
+/// screen.
+enum ClipboardHistoryLayout: String, CaseIterable {
+    case cards
+    case list
+
+    /// A value this version does not know, such as one from a newer
+    /// version, reads as the default.
+    static func current(in defaults: UserDefaults = .standard) -> ClipboardHistoryLayout {
+        defaults.string(forKey: DefaultsKey.clipboardHistoryLayout).flatMap(Self.init(rawValue:)) ?? .list
+    }
+
+    /// Cards run left to right, so a plain side arrow walks them. A list
+    /// leaves the side arrows to the search field's caret.
+    var sideArrowsMoveSelection: Bool { self == .cards }
+}
+
+enum ClipboardHistoryWindowSizing {
+    static let compactDefault = NSSize(width: 560, height: 420)
+    static let compactMinimum = NSSize(width: 560, height: 300)
+    static let previewExtra = NSSize(width: 280, height: 80)
+
+    static func minimumSize(preview: Bool) -> NSSize {
+        NSSize(width: compactMinimum.width + (preview ? previewExtra.width : 0),
+               height: compactMinimum.height + (preview ? previewExtra.height : 0))
+    }
+
+    static func contentSize(preview: Bool, savedWidth: Double, savedHeight: Double,
+                            visibleFrame: NSRect) -> NSSize {
+        let minimum = minimumSize(preview: preview)
+        let width = savedWidth.isFinite && savedWidth >= compactMinimum.width
+            ? CGFloat(savedWidth) : compactDefault.width
+        let height = savedHeight.isFinite && savedHeight >= compactMinimum.height
+            ? CGFloat(savedHeight) : compactDefault.height
+        let requested = NSSize(width: width + (preview ? previewExtra.width : 0),
+                               height: height + (preview ? previewExtra.height : 0))
+        return constrainedSize(NSSize(width: max(minimum.width, requested.width),
+                                      height: max(minimum.height, requested.height)),
+                               visibleFrame: visibleFrame)
+    }
+
+    /// A small display takes precedence over the preferred minimum, both
+    /// when opening the window and when dragging its resize handle.
+    static func constrainedSize(_ size: NSSize, visibleFrame: NSRect) -> NSSize {
+        NSSize(width: min(size.width, max(1, visibleFrame.width - 32)),
+               height: min(size.height, max(1, visibleFrame.height - 32)))
+    }
+
+    static func savedCompactSize(from contentSize: NSSize, preview: Bool) -> NSSize? {
+        let width = contentSize.width - (preview ? previewExtra.width : 0)
+        let height = contentSize.height - (preview ? previewExtra.height : 0)
+        guard width.isFinite, height.isFinite,
+              width >= compactMinimum.width, height >= compactMinimum.height else { return nil }
+        return NSSize(width: width, height: height)
+    }
+}
 
 /// Main-thread capture admission. Expiring a result does not release the
 /// actual queued read; stop/start must not release it either.
@@ -349,6 +408,103 @@ enum ClipboardHistoryEditing {
     }
 }
 
+/// Lays copied JSON out for reading in the preview. Only the whitespace
+/// between tokens changes: re-encoding through JSONSerialization would also
+/// reorder keys and respell numbers, and the preview has to show what the
+/// paste will give.
+enum ClipboardJSONFormat {
+    static let maxBytes = 256 * 1_024
+    /// Deep nesting indents every line again, so a small input can lay out
+    /// to many times its size; past this the preview keeps the copied text.
+    static let maxOutputBytes = 4 * maxBytes
+
+    static func pretty(_ text: String) -> String? {
+        guard text.utf8.count <= maxBytes,
+              let first = text.first(where: { !$0.isWhitespace }), first == "{" || first == "[",
+              (try? JSONSerialization.jsonObject(with: Data(text.utf8))) != nil
+        else { return nil }
+        let scalars = Array(text.unicodeScalars)
+        let blanks: Set<Unicode.Scalar> = [" ", "\t", "\n", "\r"]
+        var out = String.UnicodeScalarView()
+        // Never less than the layout's size: the input plus what it adds.
+        var size = text.utf8.count
+        var depth = 0, index = 0, inString = false, escaped = false
+        func newline() {
+            out.append("\n")
+            out.append(contentsOf: String(repeating: " ", count: depth * 2).unicodeScalars)
+            size += 1 + depth * 2
+        }
+        while index < scalars.count {
+            guard size <= maxOutputBytes else { return nil }
+            let scalar = scalars[index]
+            index += 1
+            if inString {
+                out.append(scalar)
+                if escaped {
+                    escaped = false
+                } else if scalar == "\\" {
+                    escaped = true
+                } else if scalar == "\"" {
+                    inString = false
+                }
+                continue
+            }
+            switch scalar {
+            case _ where blanks.contains(scalar):
+                continue
+            case "\"":
+                inString = true
+                out.append(scalar)
+            case "{", "[":
+                out.append(scalar)
+                // An empty object or array stays on one line.
+                var next = index
+                while next < scalars.count, blanks.contains(scalars[next]) { next += 1 }
+                if next < scalars.count, scalars[next] == (scalar == "{" ? "}" : "]") {
+                    out.append(scalars[next])
+                    index = next + 1
+                } else {
+                    depth += 1
+                    newline()
+                }
+            case "}", "]":
+                // JSONSerialization takes a trailing comma, whose line break
+                // would leave an empty line before the bracket.
+                while out.last == " " { out.removeLast() }
+                if out.last == "\n" { out.removeLast() }
+                depth -= 1
+                newline()
+                out.append(scalar)
+            case ",":
+                out.append(scalar)
+                newline()
+            case ":":
+                out.append(contentsOf: ": ".unicodeScalars)
+                size += 1
+            default:
+                out.append(scalar)
+            }
+        }
+        return String(out)
+    }
+}
+
+/// How large a picture from the history is decoded for text recognition.
+/// Screen OCR hands Vision its whole capture, so a 5K or 6K screenshot keeps
+/// every pixel and its small text; only a larger picture, like a long
+/// scrolling capture, is scaled down to this area to bound its bitmap.
+enum ClipboardImageRecognition {
+    static let maxPixels = 24_000_000
+
+    /// The longest side to decode a `width` by `height` picture at.
+    static func decodeMaxPixelSize(width: Int, height: Int) -> Int {
+        let longest = max(width, height, 1)
+        let pixels = Double(max(width, 1)) * Double(max(height, 1))
+        guard pixels > Double(maxPixels) else { return longest }
+        return max(1, Int(Double(longest) * (Double(maxPixels) / pixels).squareRoot()))
+    }
+}
+
 struct ClipboardHistorySearchFolded: Equatable {
     let searchableText: String
     let normalizedText: String
@@ -640,6 +796,27 @@ enum ClipboardHistorySelection {
 enum ClipboardHistoryPreview {
     static func handlesSpace(selectionIsVisible: Bool, hasModifiers: Bool) -> Bool {
         selectionIsVisible && !hasModifiers
+    }
+}
+
+enum ClipboardHistoryNavigation {
+    /// How far a key moves the highlight, or nil when it is not a move.
+    /// Down and Control-N go forward and up and Control-P back in both
+    /// layouts. The cards run left to right, so a plain side arrow walks
+    /// them too; with a modifier, or in the list, it stays with the search
+    /// field's caret.
+    static func step(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, key: String?,
+                     layout: ClipboardHistoryLayout) -> Int? {
+        let sideArrowsMove = modifiers.isEmpty && layout.sideArrowsMoveSelection
+        if keyCode == UInt16(kVK_DownArrow) || (modifiers == [.control] && key == "n")
+            || (sideArrowsMove && keyCode == UInt16(kVK_RightArrow)) {
+            return 1
+        }
+        if keyCode == UInt16(kVK_UpArrow) || (modifiers == [.control] && key == "p")
+            || (sideArrowsMove && keyCode == UInt16(kVK_LeftArrow)) {
+            return -1
+        }
+        return nil
     }
 }
 

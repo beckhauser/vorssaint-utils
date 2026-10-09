@@ -78,14 +78,16 @@ enum RepositoryFeatureTests {
             var html = ""
             var copiedDuringRead = false
             var source: String?
+            var onRead: ((Kind) -> Void)?
             var pasteboardItems: [Int]? { Array(repeating: 0, count: items) }
             func string(forType type: Kind) -> String? {
                 if copiedDuringRead { changeCount += 1 }
+                onRead?(type)
                 return type == .string ? text : type == .html ? html : type == .source ? source : nil
             }
         }
         typealias NSPasteboard = Pasteboard
-        final class PollToken { let isCancelled = false }
+        final class PollToken { var isCancelled = false }
         struct PollResult {
             let changeCount: Int
             let cleaned: URLCleaning.Result?
@@ -667,6 +669,18 @@ enum RepositoryFeatureTests {
             (pollLink, "<meta charset='utf-8'><p>Read this: \(escapedPollLink)</p>", [],
              "formatted text that shows more than the link"),
             (pollLink, oversizedCopy, [], "a link copy with far more markup than one link needs"),
+            ("https://example.com/Report?utm_source=x", "<a href='https://example.com/report?utm_source=x'>Report</a>", [],
+             "an anchor whose case-sensitive path points to a different resource"),
+            ("https://example.com/?id=ABC&utm_source=x", "<a href='https://example.com/?id=abc&amp;utm_source=x'>Report</a>", [],
+             "an anchor whose case-sensitive query points to a different resource"),
+            ("https://EXAMPLE.com/Report?utm_source=x", "<a href='https://example.com/Report?utm_source=x'>Report</a>",
+             ["https://EXAMPLE.com/Report"], "an anchor whose host differs only in case"),
+            (pollLink, "<a href = 'https://example.com/'>\(escapedPollLink)</a>", [],
+             "an anchor with whitespace around its different destination"),
+            (pollLink, "<a href=\(escapedPollLink)>A post</a>", ["https://x.com/a/status/1"],
+             "a link under a title with an unquoted destination"),
+            ("https://example.com/Report?utm_source=x", "<p>https://example.com/report?utm_source=x</p>", [],
+             "formatted text that spells a case-sensitive path differently"),
         ]
         for markupCase in markupCases {
             let pasteboard = URLCleanerPollHost.Pasteboard.general
@@ -680,6 +694,28 @@ enum RepositoryFeatureTests {
             suite.expect(URLCleanerPollHost.written == markupCase.expected,
                    "automatic cleaning \(markupCase.expected.isEmpty ? "leaves alone" : "rewrites") "
                        + "\(markupCase.copy): \(URLCleanerPollHost.written)")
+        }
+
+        // Delayed providers can answer after the cleaner was turned off or
+        // another app copied. The final source read must not reopen that race.
+        for scenario in ["copy during source", "cancel during source", "cancel during HTML"] {
+            let pasteboard = URLCleanerPollHost.Pasteboard.general
+            let token = URLCleanerPollHost.PollToken()
+            pasteboard.types = chromiumTypes.map(URLCleanerPollHost.Kind.init(rawValue:))
+            pasteboard.items = 1
+            pasteboard.text = pollLink
+            pasteboard.html = titledCopy
+            pasteboard.copiedDuringRead = false
+            pasteboard.onRead = { kind in
+                if scenario == "copy during source", kind == .source { pasteboard.changeCount += 1 }
+                if scenario == "cancel during source", kind == .source { token.isCancelled = true }
+                if scenario == "cancel during HTML", kind == .html { token.isCancelled = true }
+            }
+            URLCleanerPollHost.written = []
+            _ = URLCleanerPollHost.pollPasteboard(sinceChangeCount: 0, token: token)
+            pasteboard.onRead = nil
+            suite.expect(URLCleanerPollHost.written.isEmpty,
+                         "automatic cleaning preserves the clipboard after \(scenario)")
         }
 
         // The poll holds the queue every pasteboard feature shares, so markup
@@ -1803,8 +1839,8 @@ enum RepositoryFeatureTests {
                 && !queryHabitSupportSource.contains("import Security")
                 && !selfUninstallSource.contains("removeInstallationKey")
                 && !uninstallScriptSource.contains("delete-generic-password")
-                && !queryHabitServiceSource.contains("DefaultsKey.commandBarQueryHabits"),
-               "query learning and uninstall never access Keychain or persist query habits")
+                && queryHabitServiceSource.contains("DefaultsKey.commandBarQueryHabits"),
+               "query learning persists locally without Keychain access")
         let requiredSubpaths = ["Library/Application Support", "Library/Caches", "Library/HTTPStorages"]
         for subpath in requiredSubpaths {
             suite.expect(selfUninstallSource.contains(subpath) && uninstallScriptSource.contains(subpath),

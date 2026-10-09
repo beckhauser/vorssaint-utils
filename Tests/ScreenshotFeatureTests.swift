@@ -204,6 +204,7 @@ enum ScreenshotFeatureTests {
             hideVorssaintWindows: false,
             protectedWindowIDs: protectedScreenshotWindows
         ), "screenshot cannot pick its own protected capture UI")
+        islandCaptureChecks(suite)
 
         // Another process can draw a border around a window as a window of its
         // own; clicking there has to capture the window it surrounds.
@@ -651,6 +652,60 @@ enum ScreenshotFeatureTests {
         suite.expect(ScreenshotSupport.isClick(from: CGPoint(x: 5, y: 5), to: CGPoint(x: 7, y: 8))
                 && !ScreenshotSupport.isClick(from: .zero, to: CGPoint(x: 12, y: 0)),
                "a tiny drag is a click, a real drag is not")
+
+        let penSquare = [CGPoint(x: 100, y: 100), CGPoint(x: 180, y: 100),
+                         CGPoint(x: 180, y: 180), CGPoint(x: 100, y: 180),
+                         CGPoint(x: 100, y: 100)]
+        let slowPenSquare = zip(penSquare, penSquare.dropFirst()).flatMap { start, end in
+            (0...40).map { step in
+                let fraction = CGFloat(step) / 40
+                return CGPoint(x: start.x + (end.x - start.x) * fraction,
+                               y: start.y + (end.y - start.y) * fraction)
+            }
+        }
+        for zoom: CGFloat in [0.125, 0.5, 1, 2] {
+            for path in [penSquare, slowPenSquare] {
+                var penDrag = ScreenshotSupport.EditorDrag()
+                penDrag.begin(at: CGPoint(x: path[0].x * zoom, y: path[0].y * zoom))
+                for point in path.dropFirst() {
+                    penDrag.update(to: CGPoint(x: point.x * zoom, y: point.y * zoom))
+                }
+                suite.expect(!penDrag.isTap(for: .freehand),
+                             "closed pen strokes survive sparse and dense samples at zoom \(zoom)")
+            }
+        }
+
+        var editorDrag = ScreenshotSupport.EditorDrag()
+        let dragStart = CGPoint(x: 100, y: 100)
+        editorDrag.begin(at: dragStart)
+        editorDrag.update(to: CGPoint(x: 150, y: 100))
+        editorDrag.update(to: CGPoint(x: 103, y: 102))
+        suite.expect(!editorDrag.isTap(for: .freehand), "a stroke ending near its start remains a drag")
+        for tool in ScreenshotSupport.Tool.allCases where tool != .freehand {
+            suite.expect(editorDrag.isTap(for: tool),
+                         "a non-pen tool discards a draft ending near its start: \(tool)")
+        }
+        editorDrag.update(to: dragStart)
+        suite.expect(!editorDrag.isTap(for: .freehand), "a closed pen stroke remains a drag")
+        for tool in ScreenshotSupport.Tool.allCases where tool != .freehand {
+            suite.expect(editorDrag.isTap(for: tool),
+                         "a non-pen tool discards a draft returning exactly to its start: \(tool)")
+        }
+        editorDrag.begin(at: dragStart)
+        for point in [dragStart, CGPoint(x: 103, y: 102), CGPoint(x: 97, y: 98), dragStart] {
+            editorDrag.update(to: point)
+        }
+        suite.expect(ScreenshotSupport.Tool.allCases.allSatisfy { editorDrag.isTap(for: $0) },
+                     "a new click resets prior movement and tolerates small pointer jitter")
+        editorDrag.begin(at: dragStart)
+        editorDrag.update(to: CGPoint(x: 107, y: 100))
+        suite.expect(ScreenshotSupport.Tool.allCases.allSatisfy { !editorDrag.isTap(for: $0) },
+                     "movement at the seven-point boundary is a drag for every tool")
+        editorDrag.begin(at: dragStart)
+        editorDrag.update(to: dragStart)
+        editorDrag.update(to: CGPoint(x: 120, y: 100))
+        suite.expect(ScreenshotSupport.Tool.allCases.allSatisfy { !editorDrag.isTap(for: $0) },
+                     "movement delivered only at release still counts for every tool")
 
         // The crop chrome, the loupe cross and the image applyCrop produces are
         // three drawings of one edge. They agree only while pixelSnappedCropRect
@@ -1262,6 +1317,13 @@ enum ScreenshotFeatureTests {
                 && serviceBody("    func restorePreview(").contains("latestCapture: nil)")
                 && screenshotServiceCode.contains("self.discardLatestCapture(latestCapture)\n                    return [.discard]"),
                "discarding the preview of the latest capture withholds it, while a preview reopened from history does not")
+        let previewDiscard = screenshotServiceCode.components(separatedBy: "case .discard:")
+            .dropFirst().first?.components(separatedBy: "return [.discard]").first ?? ""
+        let routeBody = serviceBody("    private func route(_ capture:")
+        suite.expect(previewDiscard.contains("unshelve(latestCapture)")
+                && routeBody.components(separatedBy: "autoShelve(").count == 2
+                && routeBody.contains("autoShelve(capture, saved: result.saved?.url)"),
+               "a capture that does not open in the editor is offered to the shelf once, and discarding it from its preview takes it back")
         // In the island the menu arrow is hidden, so a click there must open
         // the durations rather than publish at once.
         let shareMenuCode = ((try? String(
@@ -1482,6 +1544,31 @@ enum ScreenshotFeatureTests {
                                                      editorWindowNumber: 42,
                                                      editorIsKey: true),
                "screenshot editor ignores events explicitly owned by another window")
+        suite.expect(ScreenshotSupport.editorIgnoresPostedCopy(sourceProcessID: 4242, ownProcessID: 77,
+                                                         now: 100.3, lastPointerActivity: 100),
+               "a Command-C another app posts as a canvas drag ends does not copy and close the editor")
+        suite.expect(!ScreenshotSupport.editorIgnoresPostedCopy(sourceProcessID: 0, ownProcessID: 77,
+                                                          now: 100.1, lastPointerActivity: 100),
+               "a pressed Command-C right after drawing still copies the capture")
+        suite.expect(!ScreenshotSupport.editorIgnoresPostedCopy(sourceProcessID: 4242, ownProcessID: 77,
+                                                          now: 101, lastPointerActivity: 100),
+               "a posted Command-C well after the last stroke still copies, as automation sends it")
+        suite.expect(!ScreenshotSupport.editorIgnoresPostedCopy(sourceProcessID: 4242, ownProcessID: 77,
+                                                          now: 100, lastPointerActivity: -.infinity),
+               "a posted Command-C before any canvas gesture still copies")
+        let editorControllerSource = (try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/QuickTools/ScreenshotEditorController.swift",
+            encoding: .utf8)) ?? ""
+        suite.expect(editorControllerSource.contains("ScreenshotSupport.editorIgnoresPostedCopy(")
+                && editorControllerSource.contains("self.model.notePointerActivity()")
+                && editorControllerSource.contains("NSEvent.removeMonitor(pointerMonitor)"),
+               "the editor's Command-C checks for a posted copy, fed by every press and drag in its window")
+        suite.expect(ScreenshotSupport.editorIgnoresRepeatedOutputKey(keyCode: kVK_Return, command: false, isRepeat: true)
+                && ScreenshotSupport.editorIgnoresRepeatedOutputKey(keyCode: kVK_ANSI_C, command: true, isRepeat: true),
+               "a held Return or Command-C does not copy and close the editor it repeats into")
+        suite.expect(!ScreenshotSupport.editorIgnoresRepeatedOutputKey(keyCode: kVK_Return, command: false, isRepeat: false)
+                && !ScreenshotSupport.editorIgnoresRepeatedOutputKey(keyCode: kVK_ANSI_Z, command: true, isRepeat: true),
+               "a single Return copies, and held undo keeps repeating")
         let previewFrame = ScreenshotSupport.quickPreviewFrame(
             size: CGSize(width: 286, height: 210),
             anchor: CGRect(x: 1100, y: 100, width: 300, height: 300),
@@ -3263,6 +3350,8 @@ enum ScreenshotFeatureTests {
                "screenshot annotation shadows ship off")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotShowLastRegion] as? Bool == true,
                "the previous capture outline stays visible by default, as it always was")
+        suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotHighlightWindows] as? Bool == true,
+               "window highlights preserve the existing selection appearance by default")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotLoupeStartsOn] as? Bool == false,
                "the always-on loupe is an opt-in and ships off")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotLoupeRememberZoom] as? Bool == false
@@ -3283,6 +3372,23 @@ enum ScreenshotFeatureTests {
         suite.expect(SettingsBackupSupport.exportKeys().contains(DefaultsKey.screenshotPreviewEnabled)
                 && SettingsBackupSupport.exportKeys().contains(DefaultsKey.screenshotPreviewDuration),
                "screenshot confirmation preferences are included in settings backups")
+        suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotAddToShelf] as? Bool == false
+                && SettingsBackupSupport.exportKeys().contains(DefaultsKey.screenshotAddToShelf),
+               "adding captures to the shelf ships off and travels in settings backups")
+        let captureShelfSuite = "com.vorssaint.tests.capture-shelf.\(UUID().uuidString)"
+        let captureShelfDefaults = UserDefaults(suiteName: captureShelfSuite)!
+        defer { captureShelfDefaults.removePersistentDomain(forName: captureShelfSuite) }
+        func capturesGoToShelf(option: Bool, installed: Bool, on: Bool) -> Bool {
+            captureShelfDefaults.set(option, forKey: DefaultsKey.screenshotAddToShelf)
+            captureShelfDefaults.set(installed, forKey: AppFeature.shelf.availabilityKey)
+            captureShelfDefaults.set(on, forKey: DefaultsKey.shelfEnabled)
+            return ScreenshotSupport.addsCapturesToShelf(in: captureShelfDefaults)
+        }
+        suite.expect(capturesGoToShelf(option: true, installed: true, on: true)
+                && !capturesGoToShelf(option: false, installed: true, on: true)
+                && !capturesGoToShelf(option: true, installed: true, on: false)
+                && !capturesGoToShelf(option: true, installed: false, on: true),
+               "captures go to the shelf only with the option on and the shelf installed and switched on")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotSharingEnabled] as? Bool == true,
                "temporary screenshot links preserve their existing availability by default")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotToolOrder] as? String
@@ -3786,6 +3892,48 @@ enum ScreenshotFeatureTests {
                 == [.screenshot, .colorPicker],
                "capture roles are reordered for display and other roles fall away")
         GlobalShortcut.refreshLayoutLabels()
+    }
+
+    /// The island follows "Show in screenshots and videos" in Vorssaint's own
+    /// captures too, area selections included, except while it is the tool
+    /// taking the picture.
+    private static func islandCaptureChecks(_ suite: TestSuite) {
+        let island: CGWindowID = 20, copy: CGWindowID = 21, editor: CGWindowID = 11, overlay: CGWindowID = 12
+        let islandWindows: Set<CGWindowID> = [island, copy]
+        let ownWindows: Set<CGWindowID> = [editor, overlay, island, copy]
+        func shown(preference: Bool, tool: Bool) -> Set<CGWindowID> {
+            ScreenshotCapturePolicy.islandCaptureWindowIDs(
+                islandWindowIDs: islandWindows, mainWindowID: island,
+                showsInCaptures: preference, showsCaptureTool: tool)
+        }
+        suite.expect(shown(preference: true, tool: false) == islandWindows,
+                     "the island at rest, or open on a page, is in the picture when it shows in captures")
+        suite.expect(shown(preference: true, tool: true) == [copy],
+                     "the capture controls or a capture just taken stay out; copies on other displays stay in")
+        suite.expect(shown(preference: false, tool: false).isEmpty && shown(preference: false, tool: true).isEmpty,
+                     "the island stays out of every capture when it does not show in captures")
+
+        for tool in [false, true] {
+            let visible = shown(preference: true, tool: tool)
+            // What NotchService protects: the island windows not shown.
+            let protected = islandWindows.subtracting(visible).union([overlay])
+            let hidden = ScreenshotCapturePolicy.excludedWindowIDs(
+                hideVorssaintWindows: true, ownWindowIDs: ownWindows,
+                protectedWindowIDs: protected, islandWindowIDs: visible)
+            suite.expect(hidden == ownWindows.subtracting(visible),
+                         "hiding Vorssaint windows leaves the shown island in (capture tool: \(tool))")
+            let kept = ScreenshotCapturePolicy.excludedWindowIDs(
+                hideVorssaintWindows: false, ownWindowIDs: ownWindows,
+                protectedWindowIDs: protected, islandWindowIDs: visible)
+            suite.expect(kept == protected,
+                         "showing Vorssaint windows still keeps the capture interface out (capture tool: \(tool))")
+        }
+        // Watch reads an area and must never see the island, whatever the preference says.
+        suite.expect(ScreenshotCapturePolicy.excludedWindowIDs(
+            hideVorssaintWindows: true, ownWindowIDs: ownWindows,
+            protectedWindowIDs: islandWindows.union([overlay]),
+            islandWindowIDs: shown(preference: true, tool: false)) == ownWindows,
+                     "a caller that protects the island keeps it out even when it shows in captures")
     }
 }
 

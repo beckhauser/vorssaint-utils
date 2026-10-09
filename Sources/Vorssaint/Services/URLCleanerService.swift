@@ -185,14 +185,17 @@ final class URLCleanerService: ObservableObject {
             }
             // Browsers write the address they resolved, percent-encoded and
             // with a slash for an empty path, so links compare as addresses.
-            // Case folds after parsing, which writes its escapes in upper case.
+            // Only the scheme and host ignore case. Paths and query values
+            // can identify different resources when their case differs.
             func address(_ string: String) -> String {
                 guard let url = URL(string: string),
                       var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-                    return string.lowercased()
+                    return string
                 }
+                components.scheme = components.scheme?.lowercased()
+                components.host = components.host?.lowercased()
                 if components.path.isEmpty { components.path = "/" }
-                return (components.string ?? string).lowercased()
+                return components.string ?? string
             }
             let link = text.trimmingCharacters(in: .whitespacesAndNewlines)
             let linkAddress = address(link)
@@ -203,30 +206,43 @@ final class URLCleanerService: ObservableObject {
             let shown = rawHTML.replacingOccurrences(
                 of: #"<(head|style|script|title)\b[^<>]*>[\s\S]*?(?:</\1\s*>|(?=<body\b)|\z)"#,
                 with: "", options: [.regularExpression, .caseInsensitive])
-            let targets = shown.replacingOccurrences(of: "href=", with: "href=", options: .caseInsensitive)
-                .components(separatedBy: "href=").dropFirst()
-                .map { address(String($0.dropFirst().prefix { $0 != "\"" && $0 != "'" })
-                    .replacingOccurrences(of: "&amp;", with: "&")) }
+            // HTML permits whitespace around '=' and unquoted addresses.
+            // Missing those targets would mistake a different link with
+            // this address as its label for plain formatted text.
+            guard let href = try? NSRegularExpression(
+                pattern: #"\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#,
+                options: .caseInsensitive) else {
+                return PollResult(changeCount: changeCount, cleaned: nil)
+            }
+            let targets = href.matches(in: shown, range: NSRange(shown.startIndex..., in: shown))
+                .compactMap { match -> String? in
+                    (1...3).compactMap { Range(match.range(at: $0), in: shown) }.first.map {
+                        address(String(shown[$0]).replacingOccurrences(of: "&amp;", with: "&"))
+                    }
+                }
             let html = rawHTML.lowercased()
-            let visible = shown.lowercased().replacingOccurrences(of: "&amp;", with: "&")
+            let visible = shown.replacingOccurrences(of: "&amp;", with: "&")
                 .replacingOccurrences(of: "<[^<>]*>", with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let media = ["<img", "<video", "<audio", "<picture", "<svg", "<iframe", "<object", "<embed"]
             guard !media.contains(where: html.contains), targets.allSatisfy({ $0 == linkAddress }),
-                  !targets.isEmpty || visible.isEmpty || visible == link.lowercased() else {
+                  !targets.isEmpty || visible.isEmpty || visible == link else {
                 return PollResult(changeCount: changeCount, cleaned: nil)
             }
         }
+        // A promised source can block too. Read it before the last check,
+        // so a replacement copy or cancellation during that wait wins.
+        let source = pasteboard.string(forType: .source)
         // Another app may have copied since the read. Nothing compares and
         // swaps across processes, so this narrows the window, not closes it.
-        guard pasteboard.changeCount == changeCount else {
+        guard !token.isCancelled, pasteboard.changeCount == changeCount else {
             return PollResult(changeCount: changeCount, cleaned: nil)
         }
 
         // The app the copy named as its source stays named, and a copy from
         // another device stays marked as one, so the clipboard history does
         // not credit the cleaned link to the app in front.
-        let rewrittenChangeCount = writeToPasteboard(cleaned.url, source: pasteboard.string(forType: .source),
+        let rewrittenChangeCount = writeToPasteboard(cleaned.url, source: source,
                                                      remote: types.contains("com.apple.is-remote-clipboard"))
         return PollResult(changeCount: rewrittenChangeCount, cleaned: cleaned)
     }

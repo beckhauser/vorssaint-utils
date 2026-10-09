@@ -900,6 +900,7 @@ extension Strings {
         supportIntroMessage: "개발을 금전적으로 돕고 싶다면 Buy Me a Coffee가 유일한 후원 창구입니다.",
         supportIntroStarButton: "GitHub에서 Vorssaint에 별표 남기기",
         supportIntroStarMessage: "금전적인 후원은 전혀 기대하지 않습니다. GitHub의 별표 하나가 더 많은 사람이 Vorssaint를 발견하게 하고 개발에도 큰 힘이 됩니다.",
+        supportIntroStarHint: "GitHub에 별을 눌러 주시면 더 많은 사람이 Vorssaint를 알게 되고, 저희에게 큰 의미가 됩니다.",
         supportIntroCoffeeButton: "Buy Me a Coffee에서 후원하기",
         supportIntroLaterButton: "나중에",
         supportIntroDoneButton: "완료",

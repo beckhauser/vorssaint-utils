@@ -900,6 +900,7 @@ extension Strings {
         supportIntroMessage: "如果你想喺經濟上支持開發，Buy Me a Coffee 係唯一嘅支持方式。",
         supportIntroStarButton: "在 GitHub 為 Vorssaint 加星",
         supportIntroStarMessage: "我哋從不期待經濟支持。在 GitHub 加一顆星可以令更多人發現 Vorssaint，亦會實際幫助佢繼續發展。",
+        supportIntroStarHint: "喺 GitHub 加一粒星，都可以幫更多人認識 Vorssaint，對我哋意義重大。",
         supportIntroCoffeeButton: "透過 Buy Me a Coffee 支持",
         supportIntroLaterButton: "稍後再說",
         supportIntroDoneButton: "完成",

@@ -900,6 +900,7 @@ extension Strings {
         supportIntroMessage: "Если вы хотите финансово поддержать разработку, сделать это можно только через Buy Me a Coffee.",
         supportIntroStarButton: "Поставить Vorssaint звезду на GitHub",
         supportIntroStarMessage: "Финансовая поддержка совсем не обязательна. Звезда на GitHub помогает большему числу людей найти Vorssaint и действительно влияет на его развитие.",
+        supportIntroStarHint: "Звезда на GitHub тоже помогает людям узнать о Vorssaint и очень много для нас значит.",
         supportIntroCoffeeButton: "Поддержать через Buy Me a Coffee",
         supportIntroLaterButton: "Не сейчас",
         supportIntroDoneButton: "Готово",

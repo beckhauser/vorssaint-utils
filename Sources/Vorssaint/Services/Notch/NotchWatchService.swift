@@ -70,6 +70,9 @@ final class NotchWatchService: ObservableObject {
     private var readAt: Date?
     private var regionCapture: ScreenshotCaptureEngine.RegionCapture?
     private var selection: ScreenshotSelectionController?
+    /// A chosen area can still be preparing after its selector closes.
+    /// Stopping or choosing again makes that preparation stale.
+    private var choiceGeneration = UUID()
     private lazy var tone = NSSound(contentsOfFile: "/System/Library/Sounds/Glass.aiff", byReference: false)
 
     private init() {}
@@ -93,17 +96,20 @@ final class NotchWatchService: ObservableObject {
             freeze: false, includePointer: false, showLastRegion: false, hideVorssaintWindows: true,
             protectedWindowIDs: { notch.protectedWindowIDs.union(notch.captureChromeWindowIDs) },
             purpose: FeatureStrings.notchWatch(L10n.shared.language).purpose, mode: .geometry)
+        let choice = UUID()
+        choiceGeneration = choice
         selection = controller
         controller.begin { [weak self] outcome in
-            guard let self else { return }
+            guard let self, self.choiceGeneration == choice else { return }
             self.selection = nil
             guard case .region(let region) = outcome else { return }
-            Task { @MainActor [weak self] in await self?.watch(region) }
+            Task { @MainActor [weak self] in await self?.watch(region, choice: choice) }
         }
     }
 
     @MainActor
-    private func watch(_ region: RecorderSupport.Region) async {
+    private func watch(_ region: RecorderSupport.Region, choice: UUID) async {
+        guard choiceGeneration == choice, NotchWatchSupport.isEnabled() else { return }
         let notch = NotchService.shared
         let protected = notch.protectedWindowIDs.union(notch.captureChromeWindowIDs)
         let picked: (id: CGWindowID, crop: CGRect)?
@@ -132,6 +138,7 @@ final class NotchWatchService: ObservableObject {
             guard let capture = await ScreenshotCaptureEngine.prepareDisplayRegion(
                 displayID: region.displayID, pixelRect: region.pixelRect, includePointer: false,
                 hideVorssaintWindows: true, protectedWindowIDs: protected, keepsIslandOut: true) else { return }
+            guard choiceGeneration == choice, NotchWatchSupport.isEnabled() else { return }
             regionCapture = capture
             target = NotchWatchTarget(windowID: nil, displayID: region.displayID, crop: region.pixelRect,
                                       appName: FeatureStrings.notchWatch(L10n.shared.language).title,
@@ -157,6 +164,10 @@ final class NotchWatchService: ObservableObject {
     }
 
     func stop() {
+        choiceGeneration = UUID()
+        let choosing = selection
+        selection = nil
+        choosing?.cancel()
         cancelLoop()
         target = nil
         state = .idle

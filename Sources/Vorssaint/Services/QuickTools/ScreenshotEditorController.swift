@@ -185,7 +185,8 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
 
     // Gesture state, in image pixels.
     private var dragStart: CGPoint = .zero
-    private var draftID: UUID?
+    /// The shape a drag is drawing, until it lands.
+    @Published private(set) var draftID: UUID?
     private var moveOrigin: CGRect = .zero
     private var movePoints: [CGPoint] = []
     private var activeHandle: ScreenshotSupport.Handle?
@@ -195,6 +196,13 @@ final class ScreenshotEditorModel: ObservableObject, BackdropEditing {
     private var dragRegistered = false
     private var editingSelectedAnnotation = false
     private var newTextID: UUID?
+    /// System uptime of the last press, drag or release in the editor window.
+    /// Nothing on screen reads it, so it is not published.
+    private(set) var lastPointerActivityUptime: TimeInterval = -.infinity
+
+    func notePointerActivity() {
+        lastPointerActivityUptime = ProcessInfo.processInfo.systemUptime
+    }
 
     var imageSize: CGSize {
         CGSize(width: baseImage.width, height: baseImage.height)
@@ -1209,6 +1217,7 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var keyMonitor: Any?
     private var scrollMonitor: Any?
+    private var pointerMonitor: Any?
 
     var protectedWindowIDs: Set<CGWindowID> {
         guard let window, window.isVisible, window.windowNumber > 0 else { return [] }
@@ -1297,6 +1306,15 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
             }
             return self.handleKey(event) ? nil : event
         }
+        // A stroke, a slider or the drag-out handle can draw a select-to-copy
+        // utility's posted ⌘C; see `ScreenshotSupport.editorIgnoresPostedCopy`.
+        pointerMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            if let self, let window = self.window, event.windowNumber == window.windowNumber {
+                self.model.notePointerActivity()
+            }
+            return event
+        }
         // Control-scroll adjusts canvas zoom.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, let window = self.window,
@@ -1317,6 +1335,10 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = Int(event.keyCode)
+        if ScreenshotSupport.editorIgnoresRepeatedOutputKey(
+            keyCode: key, command: flags.contains(.command), isRepeat: event.isARepeat) {
+            return true
+        }
 
         let orderRaw = UserDefaults.standard.string(forKey: DefaultsKey.screenshotToolOrder)
         let bindingsRaw = UserDefaults.standard.string(forKey: DefaultsKey.screenshotToolShortcuts)
@@ -1337,7 +1359,11 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
                 // editor open; otherwise the capture leaves as an image.
                 if !model.selectedWordIndexes.isEmpty {
                     copySelectedText()
-                } else {
+                } else if !ScreenshotSupport.editorIgnoresPostedCopy(
+                    sourceProcessID: event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? 0,
+                    ownProcessID: Int64(getpid()),
+                    now: ProcessInfo.processInfo.systemUptime,
+                    lastPointerActivity: model.lastPointerActivityUptime) {
                     copyToClipboard()
                 }
                 return true
@@ -1412,10 +1438,20 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
                 completion(nil)
                 return
             }
+            // Rendering may outlive the editor or the feature. Recheck before
+            // transmitting the capture, not only when the server answers.
+            guard self.window != nil,
+                  AppFeature.screenshot.isAvailable,
+                  UserDefaults.standard.bool(forKey: DefaultsKey.screenshotSharingEnabled) else {
+                completion(nil)
+                return
+            }
             do {
                 let record = try await ScreenshotShareService.shared.createLink(
                     pngData: data, duration: duration)
-                guard self.window != nil else {
+                guard self.window != nil,
+                      AppFeature.screenshot.isAvailable,
+                      UserDefaults.standard.bool(forKey: DefaultsKey.screenshotSharingEnabled) else {
                     try? await ScreenshotShareService.shared.delete(record)
                     completion(nil)
                     return
@@ -1564,6 +1600,22 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The edited image goes to the shelf as a file named like a saved
+    /// capture, and the editor closes as it does after Save.
+    func addToShelf() {
+        guard let export = model.exportImage(),
+              let data = ScreenshotRenderer.pngData(from: export.image, scale: export.scale)
+        else { return }
+        let name = ScreenshotSupport.fileName(prefix: strings.fileNamePrefix, date: Date())
+        guard ShelfService.shared.shelveGeneratedFile(data, named: name) != nil else {
+            NSSound.beep()
+            return
+        }
+        model.markExported()
+        QuickToolHUD.show(icon: "tray.full", message: L10n.shared.s.shelfName)
+        window?.close()
+    }
+
     /// Pinning snapshots the current export and leaves the editor open.
     func pin() {
         guard let export = model.exportImage(withBackdrop: false) else { return }
@@ -1603,6 +1655,10 @@ final class ScreenshotEditorController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let pointerMonitor {
+            NSEvent.removeMonitor(pointerMonitor)
+            self.pointerMonitor = nil
+        }
         if let scrollMonitor {
             NSEvent.removeMonitor(scrollMonitor)
             self.scrollMonitor = nil

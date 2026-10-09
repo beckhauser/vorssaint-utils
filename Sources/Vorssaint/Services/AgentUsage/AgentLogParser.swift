@@ -142,11 +142,17 @@ enum AgentLogParser {
         // Tool results arrive inside a turn and can be large; while a turn is
         // open, the line only has to say that work goes on.
         if state.turnOpen {
-            if !state.runningCommands.isEmpty {
-                if contains(line, #""tool_use_id""#) {
-                    state.runningCommands = state.runningCommands.filter { line.range(of: Data($0.utf8)) == nil }
-                } else if let json = object(line), json["type"] as? String == "user",
-                          json["isMeta"] as? Bool != true, json["isSidechain"] as? Bool != true {
+            if !state.runningCommands.isEmpty, let json = object(line), json["type"] as? String == "user",
+               json["isMeta"] as? Bool != true, json["isSidechain"] as? Bool != true {
+                let content = (json["message"] as? [String: Any])?["content"]
+                let results = (content as? [[String: Any]] ?? []).filter { $0["type"] as? String == "tool_result" }
+                if !results.isEmpty {
+                    // A result can quote other commands or contain a log.
+                    // Only its own call identifier completes that command.
+                    for result in results {
+                        if let id = result["tool_use_id"] as? String { state.runningCommands.remove(id) }
+                    }
+                } else {
                     // A prompt inside an open turn, as when a session killed
                     // in the middle of a command resumes, leaves it behind.
                     state.runningCommands = []
